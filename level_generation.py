@@ -289,3 +289,288 @@ Test:
 #print(hs)
 #print(max_hall_length(test_case, hs[2]))
 
+"""
+Get all combinations for 1X3, 2x3, 3x2, 3x3,3x4, 4x3, and 4x4 for single button env and agent is one move away from win
+"""
+
+def get_tutorial():
+    tutorial_base = np.matrix([
+        [1,1,1,1,1],
+        [1,2,3,4,1],
+        [1,1,1,1,1]
+    ])
+    return [np.rot90(tutorial_base, k) for k in range(4)]
+
+#print(get_tutorial())
+
+def get_omanxm(n,m):
+    dirs = [(-1,0), (1,0), (0,-1), (0,1)]
+    base = np.pad(np.zeros((n, m)), pad_width=1, mode='constant', constant_values=1)
+    listOfCombinations = []
+    for i in range(n+2)[1:-1]:
+        for j in range(m+2)[1:-1]:
+            for dy,dx in dirs:
+                matrix = np.copy(base)
+                matrix[i,j] = 4
+                if 0<i+dy*2<(n+2) and 0<j+dx*2<(m+2):
+                    if matrix[i+dy*2,j+dx*2] == 0:
+                        matrix[i+dy,j+dx] = 3
+                        matrix[i+dy*2,j+dx*2] = 2
+                        listOfCombinations.append(matrix)
+                        listOfCombinations.append(np.rot90(matrix))
+    return listOfCombinations
+
+#print(len(get_omanxm(4,4)))
+
+"""
+get the t-step away convos for nxm and 1 box next to goal // I dont recomend asking for over 7x7
+"""
+
+def get_nxm(n,m):
+    dirs = [(-1,0), (1,0), (0,-1), (0,1)]
+    base = np.pad(np.zeros((n, m)), pad_width=1, mode='constant', constant_values=1)
+    listOfCombinations = []
+    for i in range(n+2)[1:-1]:
+        for j in range(m+2)[1:-1]:
+            for dy,dx in dirs:
+                matrix = np.copy(base)
+                matrix[i,j] = 4
+                if 0<i+dy*2<(n+2) and 0<j+dx*2<(m+2):
+                    if matrix[i+dy*2,j+dx*2] == 0:
+                        matrix[i+dy,j+dx] = 3
+                        for k in range(n+2)[1:-1]:
+                            for l in range(m+2)[1:-1]:
+                                if matrix[k, l] == 0:
+                                    temp = np.copy(matrix)
+                                    temp[k, l] = 2
+                                    listOfCombinations.append(temp)
+                                    listOfCombinations.append(np.rot90(temp))
+                                if matrix[k, l] == 4:
+                                    temp = np.copy(matrix)
+                                    temp[k, l] = 6
+                                    listOfCombinations.append(temp)
+                                    listOfCombinations.append(np.rot90(temp))
+    return listOfCombinations
+
+# print(len(get_nxm(7,7))) ---- Dont go over 7x7 it explodes if in cluster maybe 9x9 but id say hard pass
+
+"""
+Last step for our introductory part of the curriculum is the random generation of levels for environments of the following characteristics:
+    - 2 or 4 goals al next to solvable boxes
+    -6x6 or 8x8 environments
+"""
+
+def generate_simple_random_easy(n,m,k):
+    dirs = [(-1,0), (1,0), (0,-1), (0,1)]
+    base = np.pad(np.zeros((n, m)), pad_width=1, mode='constant', constant_values=1)
+    for _ in range(k):
+        pos = (random.randint(1,n-1), random.randint(1,m-1))
+        woking_directions = []
+        while True:
+            if base[pos] != 0:
+                pos = (random.randint(1,n-1), random.randint(1,m-1))
+            else:
+                base[pos] = 4
+                for dy,dx in dirs:
+                    if 0<pos[0]+dy*2<n+2 and 0<pos[1]+dx*2<m+2:
+                        if base[pos[0]+dy*2,pos[1]+dx*2] == 0 and (base[pos[0]+dy,pos[1]+dx] == 0 or base[pos[0]+dy,pos[1]+dx]==4):
+                            woking_directions.append((dy,dx))
+                if woking_directions:
+                    break
+                else:
+                    base[pos] = 0
+        box_dir = random.choice(woking_directions)
+        base[pos[0]+box_dir[0],pos[1]+box_dir[1]] = 3
+    possible_player_positions = np.where((base == 0) | (base == 4))
+    p_pos = random.choice(list(zip(*possible_player_positions)))
+    base[p_pos] = 2 if base[p_pos] == 0 else 6
+    return base.astype(int)
+
+"""
+footnotes:
+    -if you need easyier levels change this (base[pos[0]+dy,pos[1]+dx] == 0 or base[pos[0]+dy,pos[1]+dx]==4)
+"""
+
+#print(generate_simple_random_easy(8,8,4))
+
+"""
+Box movement training phase
+"""
+
+def n_path(n):
+    dirs = [(-1,0), (1,0), (0,-1), (0,1), (-1,-1),(1,1),(-1,1),(1,-1)]
+    baned_region = set()
+    def get_ocupied_positions(pos):
+        oc = {pos}
+        for dy,dx in dirs:
+            oc.add((pos[0]+dy,pos[1]+dx))
+        return oc
+    current = (0,0)
+    for _ in range(n):
+        baned_region.add(current)
+        options = []
+        for dy, dx in dirs:
+            if (current[0]+dy,current[1]+dx) in baned_region:
+                pass
+            else:
+                options.append((current[0]+dy,current[1]+dx))
+        for dy, dx in dirs:
+            baned_region.add((current[0]+dy,current[1]+dx))
+        if not options:
+            break
+        current = random.choice(options)
+    for dy, dx in dirs:
+        baned_region.add((current[0]+dy,current[1]+dx))
+    ys, xs = zip(*baned_region)
+    min_y, max_y = min(ys), max(ys)
+    min_x, max_x = min(xs), max(xs)
+    matrix = np.ones((max_y - min_y + 1, max_x - min_x + 1))
+    for y, x in baned_region:
+        matrix[y-min_y, x-min_x] = 0
+    matrix[(-min_y,-min_x)] = 3
+    matrix[(1-min_y,1-min_x)] = 2
+    matrix[(current[0]-min_y,current[1]-min_x)] = 4
+    return np.pad(matrix, pad_width=1, mode='constant', constant_values=1).astype(int)
+
+#print(n_path(1))
+
+"""
+We are almost at level solving the last bit of tutorial is to teach the agent on how to avoid obstacles
+"""
+templates = [
+    np.matrix([
+        [0,0,0],
+        [3,1,4],
+    ]),
+    np.matrix([
+        [0,1,0],
+        [3,1,4],
+        [0,0,0]
+    ]),
+    np.matrix([
+        [0,0,0],
+        [0,1,0],
+        [3,1,4],
+        [0,1,0],
+    ]),
+    np.matrix([
+        [0,0,0],
+        [3,1,0],
+        [0,4,0]
+    ]),
+    np.matrix([
+        [0,0,0,0],
+        [3,1,1,0],
+        [0,1,4,0],
+    ])
+]
+
+
+def nxmfortemps(n,m,temps):
+    base = np.pad(np.zeros((n, m)), pad_width=1, mode='constant', constant_values=1)
+    temp = random.choice(temps)
+    temp = np.rot90(temp, random.randint(0,3))
+    possible_positions = []
+    for i in range(n+2)[1:-1]:
+        for j in range(m+2)[1:-1]:
+            if i+temp.shape[0]-1<n+1 and j+temp.shape[1]-1<n+1:
+                possible_positions.append((i,j))
+    y,x = random.choice(possible_positions)
+    for i in range(temp.shape[0]):
+        for j in range(temp.shape[1]):
+            base[y+i,x+j] = temp[i,j]
+    return base
+def nxmfor_k_temps(n, m, temps, k, spacing=1):
+    base = np.pad(np.zeros((n, m)), pad_width=1, mode='constant', constant_values=1)
+    placed = 0
+    attempts = 0
+    max_attempts = k * 100
+    while placed < k and attempts < max_attempts:
+        attempts += 1
+
+        temp = random.choice(temps)
+        temp = np.rot90(temp, random.randint(0, 3))
+
+        possible_positions = []
+        for i in range(1, n+1):
+            for j in range(1, m+1):
+                if i + temp.shape[0] - 1 < n+1 and j + temp.shape[1] - 1 < m+1:
+                    sub = base[
+                        i-spacing : i+temp.shape[0]+spacing,
+                        j-spacing : j+temp.shape[1]+spacing
+                    ]
+                    if sub.shape[0] == temp.shape[0] + 2*spacing and sub.shape[1] == temp.shape[1] + 2*spacing:
+                        area = base[i:i+temp.shape[0], j:j+temp.shape[1]]
+                        if np.all((area == 0) | (temp == 0)) and np.all(sub == 0):
+                            possible_positions.append((i, j))
+        if not possible_positions:
+            continue
+        y, x = random.choice(possible_positions)
+        for i in range(temp.shape[0]):
+            for j in range(temp.shape[1]):
+                if temp[i, j] != 0:
+                    base[y+i, x+j] = temp[i, j]
+
+        placed += 1
+
+    return base
+
+#print(nxmfor_k_temps(10, 10, templates, k=5))
+
+def add_char_rand(matrix):
+    pos = random.choice(list(zip(*np.argwhere(matrix == 0))))
+    matrix[pos] = 2
+    return matrix
+
+def lvl_connect(m1,m2, form="any"):
+    y,x = m1.shape
+    upper_row = m1[1, 1:-1]
+    lower_row = m1[y-2, 1:-1]
+    left_column = m1[1:-1, 1]
+    right_column = m1[1:-1, x-2]
+    listed = [upper_row,lower_row,left_column,right_column]
+    s = None
+
+    if form == "upper":
+        s= 0
+    elif form == "lower":
+        s=1
+    elif form == "left":
+        s=2
+    elif form == "right":
+        s = 3
+    else:
+        s = random.randint(0,3)
+
+    possible_cons = list(zip(np.argwhere(listed[s] == 0)))
+    if not possible_cons:
+        raise ValueError("Ensure exterior rows and/or columns (for non padded matrices) have zeroes in them")
+    selected_con = random.choice(possible_cons)
+    selected_con = tuple(selected_con[0].tolist())
+    if s == 0:
+        lower_m2 = m2[m2.shape[0]-2, 1:-1]
+        m2_con = random.choice(list(zip(np.argwhere(lower_m2 == 0))))[0].tolist()[0]
+        m2_length = m2.shape[1]
+        m2_substract = m2_con+2 #we add 2 because first we skipped a beat [m2.shape[0]-2, 1:-1] and also indexes are not length
+        rm2 = m2_length-m2_substract
+        m1_length = x
+        m1_substract = selected_con[1]+2
+        rm1 = m1_length-m1_substract
+        L = m1_substract if m1_substract>m2_substract else m2_substract
+        Lp = rm1 if rm1>rm2 else rm2
+        tot = L + Lp
+        base = np.ones((y+m2.shape[0]-1, tot))
+        for i in range(y):
+            for j in range(x):
+                delta = m2_substract-m1_substract if m2_substract-m1_substract > 0 else 0
+                base[i+m2.shape[0]-1,j+delta] = m1[i,j]
+        for i in range(m2.shape[0]):
+            for j in range(m2.shape[1]):
+                delta = m1_substract-m2_substract if m1_substract-m2_substract > 0 else 0
+                base[i,j+delta] = m2[i,j]
+        base[m2.shape[0]-1,L-1] = 0
+        return base
+
+
+#t = nxmfortemps(5,5,templates)
+#print(lvl_connect(test_case, t, "upper"))
