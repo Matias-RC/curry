@@ -85,7 +85,7 @@ def matrix_repr(cells, height, width):
     return matrix.astype(int)
 
 #How to use:
-# print(matrix_repr(generate_maze(h,w),h,w))
+print(matrix_repr(generate_maze(h,w),h,w))
 
 """
 Prim's Algorithm
@@ -531,13 +531,13 @@ def lvl_connect(m1,m2, form="any"):
     listed = [upper_row,lower_row,left_column,right_column]
     s = None
 
-    if form == "upper":
+    if form == "upper" or form == 0:
         s= 0
-    elif form == "lower":
+    elif form == "lower" or form == 1:
         s=1
-    elif form == "left":
+    elif form == "left" or form == 2:
         s=2
-    elif form == "right":
+    elif form == "right" or form == 3:
         s = 3
     else:
         s = random.randint(0,3)
@@ -546,7 +546,7 @@ def lvl_connect(m1,m2, form="any"):
     if not possible_cons:
         raise ValueError("Ensure exterior rows and/or columns (for non padded matrices) have zeroes in them")
     selected_con = random.choice(possible_cons)
-    selected_con = tuple(selected_con[0].tolist())
+    selected_con = selected_con[0].tolist()[0]
     if s == 0:
         lower_m2 = m2[m2.shape[0]-2, 1:-1]
         m2_con = random.choice(list(zip(np.argwhere(lower_m2 == 0))))[0].tolist()[0]
@@ -554,7 +554,7 @@ def lvl_connect(m1,m2, form="any"):
         m2_substract = m2_con+2 #we add 2 because first we skipped a beat [m2.shape[0]-2, 1:-1] and also indexes are not length
         rm2 = m2_length-m2_substract
         m1_length = x
-        m1_substract = selected_con[1]+2
+        m1_substract = selected_con+2
         rm1 = m1_length-m1_substract
         L = m1_substract if m1_substract>m2_substract else m2_substract
         Lp = rm1 if rm1>rm2 else rm2
@@ -570,7 +570,800 @@ def lvl_connect(m1,m2, form="any"):
                 base[i,j+delta] = m2[i,j]
         base[m2.shape[0]-1,L-1] = 0
         return base
-
+    if s == 1:
+        upper_m2 = m2[1, 1:-1]
+        m2_con = random.choice(list(zip(np.argwhere(upper_m2 == 0))))[0].tolist()[0]
+        m2_length = m2.shape[1]
+        m2_substract = m2_con+2
+        rm2 = m2_length-m2_substract
+        m1_length = x
+        m1_substract = selected_con+2
+        rm1 = m1_length-m1_substract
+        L = m1_substract if m1_substract>m2_substract else m2_substract
+        Lp = rm1 if rm1>rm2 else rm2
+        tot = L + Lp
+        base = np.ones((y+m2.shape[0]-1, tot))
+        for i in range(y):
+            for j in range(x):
+                delta = m2_substract-m1_substract if m2_substract-m1_substract > 0 else 0
+                base[i,j+delta] = m1[i,j]
+        for i in range(m2.shape[0]):
+            for j in range(m2.shape[1]):
+                delta = m1_substract-m2_substract if m1_substract-m2_substract > 0 else 0
+                base[i+y-1,j+delta] = m2[i,j]
+        base[y-1,L-1] = 0
+        return base
+    if s == 2:
+        right_m2 = m2[1:-1, m2.shape[1]-2]
+        m2_con = random.choice(list(zip(np.argwhere(right_m2 == 0))))[0].tolist()[0]
+        m2_height = m2.shape[0]
+        m2_substract = m2_con+2
+        rm2 = m2_height-m2_substract
+        m1_height = y
+        m1_substract = selected_con+2
+        rm1 = m1_height-m1_substract
+        H = m1_substract if m1_substract>m2_substract else m2_substract
+        Hp = rm1 if rm1>rm2 else rm2
+        tot = H + Hp
+        base = np.ones((tot, x+m2.shape[1]-1))
+        for i in range(y):
+            for j in range(x):
+                delta = m2_substract-m1_substract if m2_substract-m1_substract > 0 else 0
+                base[i+delta,j+m2.shape[1]-1] = m1[i,j]
+        for i in range(m2.shape[0]):
+            for j in range(m2.shape[1]):
+                delta = m1_substract-m2_substract if m1_substract-m2_substract > 0 else 0
+                base[i+delta,j] = m2[i,j]
+        base[H-1,m2.shape[1]-1] = 0
+        return base
+    if s == 3:
+        left_m2 = m2[1:-1, 1]
+        m2_con = random.choice(list(zip(np.argwhere(left_m2 == 0))))[0].tolist()[0]
+        m2_height = m2.shape[0]
+        m2_substract = m2_con+2
+        rm2 = m2_height-m2_substract
+        m1_height = y
+        m1_substract = selected_con+2
+        rm1 = m1_height-m1_substract
+        H = m1_substract if m1_substract>m2_substract else m2_substract
+        Hp = rm1 if rm1>rm2 else rm2
+        tot = H + Hp
+        base = np.ones((tot, x+m2.shape[1]-1))
+        for i in range(y):
+            for j in range(x):
+                delta = m2_substract-m1_substract if m2_substract-m1_substract > 0 else 0
+                base[i+delta,j] = m1[i,j]
+        for i in range(m2.shape[0]):
+            for j in range(m2.shape[1]):
+                delta = m1_substract-m2_substract if m1_substract-m2_substract > 0 else 0
+                base[i+delta,j+x-1] = m2[i,j]
+        base[H-1,x-1] = 0
+        return base
 
 #t = nxmfortemps(5,5,templates)
-#print(lvl_connect(test_case, t, "upper"))
+#print(lvl_connect(test_case,t, "right"))
+
+
+"""
+the maze generators are fine but it would be golden if you could add box pushing to the maze complexes while connecting other challenges.
+
+Hypothesis this would test the hability of the encoder to discenr between a generally reconstructable representation and 
+                                                                                      a convenient representation.
+"""
+
+def hall_boxes(matrix, heads, intended_conection_sides):
+    upper_heads = []
+    lower_heads = []
+    left_heads = []
+    right_heads = []
+    for i in heads:
+        y, x = i[0]
+        if y == 1 and 0<x<matrix.shape[1]-2:
+            upper_heads.append(i)
+        elif y == matrix.shape[0]-2 and 0<x<matrix.shape[1]-1:
+            lower_heads.append(i)
+        elif 0<y<matrix.shape[0]-2 and x == 1:
+            left_heads.append(i)
+        elif 0<y<matrix.shape[0]-1 and x == matrix.shape[1]-2:
+            right_heads.append(i)
+    if intended_conection_sides[0]:
+        if upper_heads:
+            idx = random.randrange(len(upper_heads))
+            upper_heads.pop(idx)
+        elif np.argwhere(matrix[1, 1:-1] == 0).size > 0:
+            pass
+        else:
+            matrix[1, random.randint(1,matrix.shape[1]-2)] = 0
+    if intended_conection_sides[1]:
+        if lower_heads:
+            idx = random.randrange(len(lower_heads))
+            lower_heads.pop(idx)
+        elif np.argwhere(matrix[matrix.shape[0]-2, 1:-1] == 0).size > 0:
+            pass
+        else:   
+            matrix[matrix.shape[0]-2, random.randint(1,matrix.shape[1]-2)] = 0
+    if intended_conection_sides[2]:
+        if left_heads:
+            idx = random.randrange(len(left_heads))
+            left_heads.pop(idx)
+        elif (matrix[1:-1, 1] == 0).any():
+            pass
+        else:
+            matrix[random.randint(1, matrix.shape[0] - 2), 1] = 0
+    if intended_conection_sides[3]:
+        if right_heads:
+            idx = random.randrange(len(right_heads))
+            right_heads.pop(idx)
+        elif (matrix[1:-1, matrix.shape[1] - 2] == 0).any():
+            pass
+        else:
+            matrix[random.randint(1, matrix.shape[0] - 2), matrix.shape[1] - 2] = 0
+    r = set(upper_heads+lower_heads+left_heads+right_heads)
+    rp = set(heads)
+    r_f = r+rp
+    heads = list(r_f)
+    return heads, matrix
+
+"""
+Finally after lots of procesing you can reliably incorporate boxes into the halls
+"""
+
+def incorporate_boxes_and_player(matrix, heads):
+    idx = random.randrange(len(heads))
+    h = heads.pop(idx)
+    matrix[h[0]] = 2
+    for i in heads:
+        l = max_hall_length(matrix,i)
+        s = random.randint(1,l-1)
+        pos = (i[0][0]+i[1][0]*s,i[0][1]+i[1][1]*s)
+        matrix[i[0]] = 4
+        matrix[pos] = 3
+    return matrix
+
+
+"""
+Legacy:
+#########################################################
+#########################################################
+#########################################################
+#########################################################
+"""
+
+from collections import defaultdict, deque
+from dataclasses import dataclass
+from typing import Any, Optional, List, Tuple, Dict, Iterator
+import numpy as np
+import torch
+
+
+@dataclass
+class Node:
+    state: Any
+    parent: Optional['Node'] = None
+    action: Optional[Any] = None
+    
+    def trajectory(self) -> List['Node']:
+        """
+        Reconstructs the trajectory (path) from the root to this node.
+        """
+        node, path = self, []
+
+        while node:
+            path.append(node.action)
+            node = node.parent
+            
+        return list(reversed(path))[1:]
+    
+    def statesList(self) -> List['Node']:
+        node, path = self, []
+
+        while node:
+            path.append(node.state)
+            node = node.parent
+        return list(reversed(path))
+    
+    def nodesList(self) -> List['Node']:
+        node, path = self, []
+        while node:
+            path.append(node)
+            node = node.parent
+        return list(reversed(path))
+    
+
+class PriorityQueue:
+    """
+    PriorityQueue data structure.
+    Code source: https://github.com/dangarfield/sokoban-solver/blob/main/solver.py
+    """
+    def __init__(self):
+        self.Heap = []
+        self.Count = 0
+
+    def push(self, item, priority):
+        entry = (priority, self.Count, item)
+        PriorityQueue.heappush(self.Heap, entry)
+        self.Count += 1
+
+    def pop(self):
+        (_, _, item) = PriorityQueue.heappop(self.Heap)
+        return item
+
+    def isEmpty(self):
+        return len(self.Heap) == 0
+
+    # Heap functions, mimicking heapq operations
+    @staticmethod
+    def heappush(heap, item):
+        heap.append(item)
+        PriorityQueue._siftdown(heap, 0, len(heap)-1)
+
+    @staticmethod
+    def heappop(heap):
+        lastelt = heap.pop()    # raises appropriate IndexError if heap is empty
+        if heap:
+            returnitem = heap[0]
+            heap[0] = lastelt
+            PriorityQueue._siftup(heap, 0)
+            return returnitem
+        return lastelt
+
+    @staticmethod
+    def _siftup(heap, pos):
+        endpos = len(heap)
+        startpos = pos
+        newitem = heap[pos]
+        childpos = 2 * pos + 1    # leftmost child position
+        while childpos < endpos:
+            rightpos = childpos + 1
+            if rightpos < endpos and not heap[childpos] < heap[rightpos]:
+                childpos = rightpos
+            heap[pos] = heap[childpos]
+            pos = childpos
+            childpos = 2 * pos + 1
+        heap[pos] = newitem
+        PriorityQueue._siftdown(heap, startpos, pos)
+
+    @staticmethod
+    def _siftdown(heap, startpos, pos):
+        newitem = heap[pos]
+        while pos > startpos:
+            parentpos = (pos - 1) >> 1
+            parent = heap[parentpos]
+            if newitem < parent:
+                heap[pos] = parent
+                pos = parentpos
+            else:
+                break
+        heap[pos] = newitem
+
+
+class Astar:
+    def __init__(self, gameState, max_steps):
+        self.gameState = gameState
+        self.posWalls = self._pos_of(1)
+        # posGoals include cells marked as 4 and 5
+        self.posGoals = self._pos_of(4) + self._pos_of(5)+ self._pos_of(6)
+        self.max_steps = max_steps
+
+    def _pos_of(self, value):
+        return tuple(tuple(x) for x in np.argwhere(self.gameState == value))
+
+    def posOfPlayer(self):
+        return tuple(np.argwhere(self.gameState == 2)[0])
+
+    def posOfBoxes(self):
+        return tuple(tuple(x) for x in np.argwhere((self.gameState == 3) | (self.gameState == 5)))
+
+    def isEndState(self, posBox):
+        return sorted(posBox) == sorted(self.posGoals)
+
+    def isLegalAction(self, action, posPlayer, posBox):
+        # Determine next position based on action vector.
+        # If action_char is uppercase, it means a push (move two cells)
+        direction = action[0:2]
+        action_char = action[2]
+        if action_char.isupper():
+            newPos = (posPlayer[0] + 2 * direction[0], posPlayer[1] + 2 * direction[1])
+        else:
+            newPos = (posPlayer[0] + direction[0], posPlayer[1] + direction[1])
+        # Check if the new position is blocked by a box or a wall.
+        return newPos not in posBox and newPos not in self.posWalls
+
+    def legalActions(self, posPlayer, posBox):
+        # Each action is defined by its movement vector and two possible characters:
+        # lowercase (normal move) and uppercase (push move)
+        baseActions = [
+            ([-1, 0], 'u', 'U'),
+            ([1, 0], 'd', 'D'),
+            ([0, -1], 'l', 'L'),
+            ([0, 1], 'r', 'R')
+        ]
+        validActions = []
+        for move, low, up in baseActions:
+            nextPos = (posPlayer[0] + move[0], posPlayer[1] + move[1])
+            # If next position has a box then only a push is allowed; otherwise, only a normal move.
+            if nextPos in posBox:
+                # Create action tuple: movement vector and push indicator.
+                action = move + [up]
+            else:
+                action = move + [low]
+            if self.isLegalAction(action, posPlayer, posBox):
+                validActions.append(tuple(action))
+        return tuple(validActions)
+
+    def updateState(self, posPlayer, posBox, action):
+        newPosPlayer = (posPlayer[0] + action[0], posPlayer[1] + action[1])
+        posBox = list(map(list, posBox))
+        if action[2].isupper():
+            # When pushing, remove the box at the new player position and add it pushed.
+            try:
+                posBox.remove(list(newPosPlayer))
+            except ValueError:
+                # Should not happen if action is legal.
+                pass
+            newBoxPos = [posPlayer[0] + 2 * action[0], posPlayer[1] + 2 * action[1]]
+            posBox.append(newBoxPos)
+        return newPosPlayer, tuple(tuple(x) for x in posBox)
+
+    def aStarSearch(self):
+        start_state = (self.posOfPlayer(), self.posOfBoxes())
+        frontier = PriorityQueue()
+        actions_queue = PriorityQueue()
+        # Push starting state and an empty action sequence
+        frontier.push([start_state], self.heuristic(start_state))
+        actions_queue.push([""], self.heuristic(start_state))
+        exploredSet = set()
+        steps_left = self.max_steps
+        while not frontier.isEmpty() and steps_left > 0:
+            node = frontier.pop()
+            node_action = actions_queue.pop()
+            current_state = node[-1]
+            if self.isEndState(current_state[1]):
+                # Return the concatenated action sequence (excluding the initial empty string)
+                return ''.join(node_action)[1:]
+            if current_state not in exploredSet:
+                exploredSet.add(current_state)
+                for action in self.legalActions(current_state[0], current_state[1]):
+                    newPosPlayer, newPosBox = self.updateState(current_state[0], current_state[1], action)
+                    if self.isFailed(newPosBox):
+                        continue
+                    cost = len(''.join(node_action))  # Using length as cost
+                    new_state = (newPosPlayer, newPosBox)
+                    h = self.heuristic(new_state)
+                    frontier.push(node + [new_state], cost + h)
+                    actions_queue.push(node_action + [action[2]], cost + h)
+                    steps_left-1
+        return 'x'
+
+    def heuristic(self, state):
+        """
+        Heuristic function: sum of Manhattan distances for boxes not on goal.
+        Code source: https://github.com/dangarfield/sokoban-solver/blob/main/solver.py
+        """
+        posPlayer, posBox = state
+        distance = 0
+        # Boxes already on goals are not considered.
+        boxes_to_move = list(set(posBox) - set(self.posGoals))
+        # Remaining goals.
+        remaining_goals = list(set(self.posGoals) - set(posBox))
+        # For simplicity, pair each box with a goal in order.
+        for i in range(min(len(boxes_to_move), len(remaining_goals))):
+            distance += abs(boxes_to_move[i][0] - remaining_goals[i][0]) + abs(boxes_to_move[i][1] - remaining_goals[i][1])
+        return distance
+
+    def cost(self, actions):
+        """
+        A simple cost function: one cost per move.
+        Code source: https://github.com/dangarfield/sokoban-solver/blob/main/solver.py
+        """
+        return len(actions)
+
+    def isFailed(self, posBox):
+        """
+        Check if a state is potentially failed (deadlock), then prune the search.
+        """
+        # Use self.posGoals and self.posWalls
+        rotatePattern = [
+            [0,1,2,3,4,5,6,7,8],
+            [2,5,8,1,4,7,0,3,6],
+            list(reversed([0,1,2,3,4,5,6,7,8])),
+            list(reversed([2,5,8,1,4,7,0,3,6]))
+        ]
+        flipPattern = [
+            [2,1,0,5,4,3,8,7,6],
+            [0,3,6,1,4,7,2,5,8],
+            list(reversed([2,1,0,5,4,3,8,7,6])),
+            list(reversed([0,3,6,1,4,7,2,5,8]))
+        ]
+        allPattern = rotatePattern + flipPattern
+
+        for box in posBox:
+            if box not in self.posGoals:
+                board = [
+                    (box[0]-1, box[1]-1), (box[0]-1, box[1]), (box[0]-1, box[1]+1),
+                    (box[0],   box[1]-1), (box[0],   box[1]), (box[0],   box[1]+1),
+                    (box[0]+1, box[1]-1), (box[0]+1, box[1]), (box[0]+1, box[1]+1)
+                ]
+                for pattern in allPattern:
+                    newBoard = [board[i] for i in pattern]
+                    if newBoard[1] in self.posWalls and newBoard[5] in self.posWalls:
+                        return True
+                    elif newBoard[1] in posBox and newBoard[2] in self.posWalls and newBoard[5] in self.posWalls:
+                        return True
+                    elif newBoard[1] in posBox and newBoard[2] in self.posWalls and newBoard[5] in posBox:
+                        return True
+                    elif newBoard[1] in posBox and newBoard[2] in posBox and newBoard[5] in posBox:
+                        return True
+                    elif newBoard[1] in posBox and newBoard[6] in posBox and newBoard[2] in self.posWalls and newBoard[3] in self.posWalls and newBoard[8] in self.posWalls:
+                        return True
+        return False
+
+
+def grid_reconstruct(grid_dims, state, posGoals, posWalls):
+    posPlayer, posBox = state
+    y, x = grid_dims
+    grid = np.zeros(grid_dims)
+    for i in range(y):
+        for j in range(x):
+            pos = (i, j)
+            if pos == posPlayer:
+                if pos in posGoals:
+                    grid[pos] = 6
+                else:
+                    grid[pos] = 2
+            elif pos in posWalls:
+                grid[pos] = 1
+            elif pos in posBox:
+                if pos in posGoals:
+                    grid[pos] = 5
+                else:
+                    grid[pos] = 3
+            elif pos in posGoals:
+                grid[pos] = 4
+            else:
+                grid[pos] = 0
+    return grid
+
+def heuristic(state, posGoals):
+    """
+    Heuristic function: sum of Manhattan distances for boxes not on goal.
+    Code source: https://github.com/dangarfield/sokoban-solver/blob/main/solver.py
+    """
+    posPlayer, posBox = state
+    distance = 0
+    # Boxes already on goals are not considered.
+    boxes_to_move = list(set(posBox) - set(posGoals))
+    # Remaining goals.
+    remaining_goals = list(set(posGoals) - set(posBox))
+    # For simplicity, pair each box with a goal in order.
+    for i in range(min(len(boxes_to_move), len(remaining_goals))):
+        distance += abs(boxes_to_move[i][0] - remaining_goals[i][0]) + abs(boxes_to_move[i][1] - remaining_goals[i][1])
+    return distance
+
+def parse_level(string_grid):
+    """Parses a textual Sokoban-like level into a numeric grid representation."""
+    lines = string_grid.strip().split("\n")
+    max_width = max(len(line) for line in lines)  # Find the widest line
+
+    height = len(lines)
+    width = max_width
+    grid = np.ones((height, width), dtype=int) 
+    char_map = {
+        " ": 0,  # Empty space
+        "#": 1,  # Wall
+        "@": 2,  # Player
+        "$": 3,  # Box
+        ".": 4,  # Button/goal
+        "*": 5,  # Box on goal
+        "+": 6,  # Player on goal
+    }
+
+    for y, line in enumerate(lines):
+        for x, char in enumerate(line):
+            grid[y, x] = char_map.get(char, 1)
+
+    return grid
+
+
+class BaseSokobanManager:
+    def __init__(self):
+        self.grid_dims = None
+        self.grid_base = None
+        self.posWalls = None
+        self.posGoals = None
+    
+    def PosOfPlayer(self, grid):
+        return tuple(np.argwhere((grid == 2) | (grid == 6))[0])# idplayer = 2
+
+    def PosOfBoxes(self, grid):
+        return tuple(tuple(x) for x in np.argwhere((grid == 3) | (grid == 5)))
+
+    def PosOfWalls(self, grid):
+        return tuple(tuple(x) for x in np.argwhere(grid == 1))
+
+    def PosOfGoals(self, grid):
+        return tuple(tuple(x) for x in np.argwhere((grid == 4) | (grid == 5) | (grid == 6)))
+
+    def isEndState(self, node):
+        return sorted(node.state[1]) == sorted(self.posGoals)
+
+    def initializer(self, initial_state):
+        self.grid_dims = initial_state.shape
+        empty_grid = np.copy(initial_state)
+        empty_grid[(empty_grid == 2) | (empty_grid == 3)] = 0
+        empty_grid[(empty_grid == 5) | (empty_grid == 6)] = 4
+        self.grid_base = empty_grid
+        self.posWalls = self.PosOfWalls(initial_state)
+        self.posGoals = self.PosOfGoals(initial_state)
+        node = Node(state=(self.PosOfPlayer(initial_state), self.PosOfBoxes(initial_state)))
+        return node
+    
+    def isFailed(self, node):
+        posPlayer, posBox = node.state
+        """This function used to observe if the state is potentially failed, then prune the search. credits to:
+            https://github.com/dangarfield/sokoban-solver/blob/main/solver.py for this function and most fast update logic"""
+        rotatePattern = [[0,1,2,3,4,5,6,7,8],
+                        [2,5,8,1,4,7,0,3,6],
+                        [0,1,2,3,4,5,6,7,8][::-1],
+                        [2,5,8,1,4,7,0,3,6][::-1]]
+        flipPattern = [[2,1,0,5,4,3,8,7,6],
+                        [0,3,6,1,4,7,2,5,8],
+                        [2,1,0,5,4,3,8,7,6][::-1],
+                        [0,3,6,1,4,7,2,5,8][::-1]]
+        allPattern = rotatePattern + flipPattern
+
+        for box in posBox:
+            if box not in self.posGoals:
+                board = [(box[0] - 1, box[1] - 1), (box[0] - 1, box[1]), (box[0] - 1, box[1] + 1),
+                        (box[0], box[1] - 1), (box[0], box[1]), (box[0], box[1] + 1),
+                        (box[0] + 1, box[1] - 1), (box[0] + 1, box[1]), (box[0] + 1, box[1] + 1)]
+                for pattern in allPattern:
+                    newBoard = [board[i] for i in pattern]
+                    if newBoard[1] in self.posWalls and newBoard[5] in self.posWalls: return True
+                    elif newBoard[1] in posBox and newBoard[2] in self.posWalls and newBoard[5] in self.posWalls: return True
+                    elif newBoard[1] in posBox and newBoard[2] in self.posWalls and newBoard[5] in posBox: return True
+                    elif newBoard[1] in posBox and newBoard[2] in posBox and newBoard[5] in posBox: return True
+                    elif newBoard[1] in posBox and newBoard[6] in posBox and newBoard[2] in self.posWalls and newBoard[3] in self.posWalls and newBoard[8] in self.posWalls: return True
+        return False
+
+    def grid_state(self, player_pos, posBox):
+        grid = self.grid_base.copy()
+        if player_pos in self.posGoals:
+            grid[player_pos] = 6  # Player on Button
+        else:
+            grid[player_pos] = 2  # Normal Player
+        
+        for box in list(posBox):
+            if box in self.posGoals:
+                grid[box] = 5  # Box on Button
+            else:
+                grid[box] = 3  # Normal Box
+        
+        return grid
+    
+    def distance_between_states(state1, state2):
+        """
+        Euclidean Difference
+        """
+        difference = state1 -state2
+        return np.linalg.norm(difference)
+    
+    def state_to_tensor(self, grid):
+        grid = torch.tensor(grid, dtype=torch.float32)
+        grid = grid.flatten()
+        return grid
+    
+    def toTensor(self, state_action_pair, distance_to_finale, library_size):
+        """
+        state: numpy matrix -> flatten
+        action: number -> to one-hot
+        """
+        grid, action = state_action_pair
+        grid = torch.tensor(grid, dtype=torch.float32)
+        grid = grid.flatten()
+        one_hot = torch.zeros(library_size)
+        one_hot[action] = 1
+        return (grid, one_hot, distance_to_finale)
+    
+    def node_to_data(self, node):
+        actionsList = node.trajectory() # Trajectory is temporal name (really isn't the trajectory but instead the list of actions taken)
+        statesList = node.statesList()[:-1]
+        return {"actions":actionsList, "states":statesList}
+
+class SokobanManager(BaseSokobanManager):
+    def isLegalAction(self, action, posPlayer, posBoxes):
+        dx, dy = action[0]
+        factor = 2 if action[1] else 1
+        target = (posPlayer[0] + factor * dx, posPlayer[1] + factor * dy)
+        return target not in self.posWalls and target not in posBoxes
+
+    def legalUpdate(self, macro, game_data, node):
+        player, posBoxes = game_data
+        boxes = set(posBoxes)
+
+        for dx, dy in macro[0]:
+            nextPos = (player[0] + dx, player[1] + dy)
+            push = nextPos in boxes
+            action = ((dx, dy), push)
+            if not self.isLegalAction(action, player, boxes):
+                return False, None
+            player = nextPos
+            if push:
+                boxes.remove(player)
+                boxes.add((player[0] + dx, player[1] + dy))
+        posBoxes = tuple(boxes)
+        new_node = Node(state=(player, posBoxes), parent=node, action=macro[1])
+        return not self.isFailed(new_node), new_node
+    
+
+class InversedSokobanManager(BaseSokobanManager):
+    def isLegalInversion(self, action, posPlayer, posBox): 
+        xPlayer, yPlayer = posPlayer
+        x1, y1 = xPlayer - action[0], yPlayer - action[1]
+        return (x1, y1) not in posBox + self.posWalls and not sorted(posBox) == sorted(self.posGoals)
+    
+    def legalInvertedUpdate(self, macro, game_data, node):
+        player, posBoxes = game_data
+        boxes = set(posBoxes)
+
+        for dx, dy in macro[0]:
+            new_player = (player[0] - dx, player[1] - dy)
+
+            if new_player in self.posWalls:
+                return False, None
+
+            pull_candidate = (player[0] + dx, player[1] + dy)
+            pull = pull_candidate in boxes
+
+            if pull:
+                boxes.remove(pull_candidate)
+                boxes.add(player)
+
+            if not self.isLegalInversion((dx, dy), player, tuple(boxes)):
+                return False, None
+            player = new_player
+
+        new_state = (player, tuple(boxes))
+        new_node = Node(state=new_state, parent=node, action=macro[1])
+        return True, new_node
+
+def deadlockagainstwall(posBox, posGoals, posWalls,x,y):
+    if (y, x) in posGoals:
+        return False
+
+    rotatePattern = [
+        [0, 1, 2, 3, 4, 5, 6, 7, 8],
+        [2, 5, 8, 1, 4, 7, 0, 3, 6],
+        list(reversed([0, 1, 2, 3, 4, 5, 6, 7, 8])),
+        list(reversed([2, 5, 8, 1, 4, 7, 0, 3, 6]))
+    ]
+    flipPattern = [
+        [2, 1, 0, 5, 4, 3, 8, 7, 6],
+        [0, 3, 6, 1, 4, 7, 2, 5, 8],
+        list(reversed([2, 1, 0, 5, 4, 3, 8, 7, 6])),
+        list(reversed([0, 3, 6, 1, 4, 7, 2, 5, 8]))
+    ]
+    allPattern = rotatePattern + flipPattern
+
+    board = [
+        (y - 1, x - 1), (y - 1, x), (y - 1, x + 1),
+        (y,     x - 1), (y,     x), (y,     x + 1),
+        (y + 1, x - 1), (y + 1, x), (y + 1, x + 1)
+    ]
+    
+    for pattern in allPattern:
+        newBoard = [board[i] for i in pattern]
+        if newBoard[1] in posWalls and newBoard[5] in posWalls:
+            return True  # simple corner deadlock
+        elif newBoard[1] in posBox and newBoard[2] in posWalls and newBoard[5] in posWalls:
+            return True
+        elif newBoard[1] in posBox and newBoard[2] in posWalls and newBoard[5] in posBox:
+            return True
+        elif newBoard[1] in posBox and newBoard[2] in posBox and newBoard[5] in posBox:
+            return True
+        elif (newBoard[1] in posBox and newBoard[6] in posBox and 
+              newBoard[2] in posWalls and newBoard[3] in posWalls and newBoard[8] in posWalls):
+            return True
+    return False
+def is_connected(grid):
+    """
+    Check if all walkable floor tiles (floor 0 and goal 4) are connected.
+    Uses a simple breadth-first search.
+    """
+    visited = np.zeros_like(grid, dtype=bool)
+    floor_tiles = np.argwhere((grid == 0) | (grid == 4))
+    if len(floor_tiles) == 0:
+        return False
+
+    start = tuple(floor_tiles[0])
+    queue = [start]
+    while queue:
+        y, x = queue.pop(0)
+        if visited[y, x]:
+            continue
+        visited[y, x] = True
+        for dy, dx in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            ny, nx = y + dy, x + dx
+            if 0 <= ny < grid.shape[0] and 0 <= nx < grid.shape[1]:
+                if not visited[ny, nx] and (grid[ny, nx] == 0 or grid[ny, nx] == 4):
+                    queue.append((ny, nx))
+    for y, x in floor_tiles:
+        if not visited[y, x]:
+            return False
+    return True
+
+
+def make_base(width, height, n_boxes, n_walls, seed=None):
+    count = 0
+    # Loop until a valid, connected grid (and valid player placement, if required) is created.
+    while count < 100:
+        # Create grid with floor (0) and border walls (1)
+        grid = np.zeros((height, width), dtype=int)
+        grid[0, :] = grid[-1, :] = grid[:, 0] = grid[:, -1] = 1
+
+        # Place internal walls randomly on available floor positions.
+        floor_positions = list(zip(*np.where(grid == 0)))
+        if len(floor_positions) < n_walls:
+            raise ValueError("Not enough space to place the requested number of walls.")
+        wall_indices = np.random.choice(len(floor_positions), size=n_walls, replace=False)
+        for idx in wall_indices:
+            grid[floor_positions[idx]] = 1
+
+        # Check connectivity immediately.
+        if not is_connected(grid):
+            count += 1
+            continue
+
+        # Place goals (one per box).
+        num_goals = n_boxes
+        floor_positions = list(zip(*np.where(grid == 0)))
+        if len(floor_positions) < (n_boxes + num_goals + 1):
+            raise ValueError("Not enough floor space for boxes, goals, and the player.")
+        goal_indices = np.random.choice(len(floor_positions), size=num_goals, replace=False)
+        goal_positions = [floor_positions[idx] for idx in goal_indices]
+        for pos in goal_positions:
+            grid[pos] = 5
+
+
+        free_positions = list(zip(*np.where(grid == 0)))
+        if not free_positions:
+            raise ValueError("No free floor space available for the player.")
+        player_pos = free_positions[np.random.randint(len(free_positions))]
+        
+        candidates = []
+        free_positions = list(zip(*np.where(grid == 0)))
+        random.shuffle(free_positions)
+        for pos in free_positions:
+            y, x = pos
+            for dy, dx in [(-1,0), (1,0), (0,-1), (0,1)]:
+                nb_y, nb_x = y + dy, x + dx
+                ib_y, ib_x = y - dy, x - dx
+                if 0 <= nb_y < grid.shape[0] and 0 <= nb_x < grid.shape[1]:
+                    if grid[nb_y, nb_x] == 5 and grid[ib_y, ib_x] == 0:
+                        candidates.append(pos)
+        if not candidates:
+            count += 1
+            continue
+        player_pos = candidates[np.random.randint(len(candidates))]
+        
+        grid[player_pos] = 2
+        break  # valid level generated; exit loop.
+
+    return grid
+def simple_generate(width, height, n_boxes, n_walls, seed=None):
+    inver_manager = InversedSokobanManager()
+    def invert_states_random(grid, steps):
+        node = inver_manager.initializer(grid)
+        action_map = [[(-1, 0)], [(1, 0)], [(0, -1)], [(0, 1)]]
+        for _ in range(steps):
+            nodes = []
+            for idx, action in enumerate(action_map):
+                condition, new_node = inver_manager.legalInvertedUpdate((action, idx), node.state, node)
+                if condition:
+                    nodes.append(new_node)
+            if len(nodes) == 0:
+                break
+            node = random.choice(nodes)
+        return inver_manager.grid_state(node.state[0], node.state[1])
+    grid = make_base(width, height, n_boxes, n_walls,seed)
+    return invert_states_random(grid, 2000)
