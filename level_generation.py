@@ -85,7 +85,7 @@ def matrix_repr(cells, height, width):
     return matrix.astype(int)
 
 #How to use:
-print(matrix_repr(generate_maze(h,w),h,w))
+#print(matrix_repr(generate_maze(h,w),h,w))
 
 """
 Prim's Algorithm
@@ -241,18 +241,40 @@ def hallgorithm(matrix):
                             if matrix[i+dy*2,j+dx*2] == 0:
                                 works = False
                                 break
-                    if works:
+                            for dyp, dxp in [(dx,dy),(-dx,-dy)]: #Only looking to the sides to check if clear thats rotation
+                                if matrix[i+dy+dyp,j+dx+dxp] == 0:
+                                    works = False
+                                    break
+                    if works and matrix[i-free_dirs[odd_index][0],j-free_dirs[odd_index][1]] != 0:
                         heads.append([(i,j),free_dirs[odd_index]])
                 elif len(free_dirs) == 2:
                     l_shape = (abs(free_dirs[0][0])+abs(free_dirs[1][0]))==1
-                    works = False
-                    direction_id = None
+                    works = []
                     for dy, dx in free_dirs:
+                        t = [0,0,0]
                         if 0< i+dy*2 < matrix.shape[0] and 0<j+dx*2<matrix.shape[1]:
                             if matrix[i+dy*2,j+dx*2] == 0:
                                 direction_id = (dy,dx)
-                                works = not works
-                    if l_shape and works:
+                                t[0] = 1
+                            item_val = 0
+                            for dyp, dxp in [(dx,dy),(-dx,-dy)]: #Only looking to the sides to check if clear thats rotation
+                                item_val += 1
+                                if matrix[i+dy+dyp,j+dx+dxp] == 0:
+                                    t[item_val] = 1
+                        works.append(t)
+                    truth_value = True
+                    for t_val in works[0]:
+                        for tp_val in works[1]:
+                            if t_val and tp_val:
+                                truth_value = False
+                    if works[0][0] == 0 and works[1][0] == 0:
+                        truth_value = False
+                    if l_shape and truth_value:
+                        direction_id = None
+                        for idx, item in enumerate(works):
+                            if item[0] == 1:
+                                direction_id = free_dirs[idx]
+
                         heads.append([(i,j),direction_id])
                 elif len(free_dirs) == 1:
                     dy = free_dirs[0][0]
@@ -480,7 +502,7 @@ def nxmfortemps(n,m,temps):
         for j in range(temp.shape[1]):
             base[y+i,x+j] = temp[i,j]
     return base
-def nxmfor_k_temps(n, m, temps, k, spacing=1):
+def nxmfor_k_temps(n, m, temps, k, spacing=2):
     base = np.pad(np.zeros((n, m)), pad_width=1, mode='constant', constant_values=1)
     placed = 0
     attempts = 0
@@ -698,10 +720,10 @@ def hall_boxes(matrix, heads, intended_conection_sides):
             pass
         else:
             matrix[random.randint(1, matrix.shape[0] - 2), matrix.shape[1] - 2] = 0
-    r = set(upper_heads+lower_heads+left_heads+right_heads)
-    rp = set(heads)
-    r_f = r+rp
-    heads = list(r_f)
+    r = set(tuple(i[0]) for i in (upper_heads + lower_heads + left_heads + right_heads))
+    rp = set(tuple(i[0]) for i in heads)
+    r_f = r.union(rp)
+    heads = [ [h] for h in r_f ]
     return heads, matrix
 
 """
@@ -714,13 +736,63 @@ def incorporate_boxes_and_player(matrix, heads):
     matrix[h[0]] = 2
     for i in heads:
         l = max_hall_length(matrix,i)
-        s = random.randint(1,l-1)
-        pos = (i[0][0]+i[1][0]*s,i[0][1]+i[1][1]*s)
-        matrix[i[0]] = 4
-        matrix[pos] = 3
+        if l < 2:
+            pass
+        else:
+            s = random.randint(1,l-1)
+            pos = (i[0][0]+i[1][0]*s,i[0][1]+i[1][1]*s)
+            matrix[i[0]] = 4
+            matrix[pos] = 3
     return matrix
 
+def easy_to_use_halls_without_connect(matrix):
+    l = hallgorithm(matrix)
+    temp = []
+    for i in l:
+        if max_hall_length(matrix, i) != 1:
+            temp.append(i)
+    return incorporate_boxes_and_player(matrix, temp).astype(int)
+def easy_to_use_halls_connect(matrix):
+    y, x = matrix.shape
+    intended_connection = random.randint(0,3)
+    icl = [0,0,0,0]
+    icl[intended_connection] = 1
+    l = hallgorithm(matrix)
+    temp = []
+    for i in l:
+        if max_hall_length(matrix, i) != 1:
+            temp.append(i)
+    cands = []
+    alts = []
+    for i in temp:
+        if icl[0]:
+            if i[0][0] == 1:
+                cands.append(i)
+            else:
+                alts.append(i)
+        if icl[1]:
+            if i[0][0] == y:
+                cands.append(i)
+            else:
+                alts.append(i)
+        if icl[2]:
+            if i[0][1] == 1:
+                cands.append(i)
+            else:
+                alts.append(i)
+        if icl[3]:
+            if i[0][1] == x:
+                cands.append(i)
+            else:
+                alts.append(i)
+    if cands:
+        idx = random.randrange(len(cands))
+        _ = cands.pop(idx)
+    temp = cands + alts
+    matrix = incorporate_boxes_and_player(matrix, temp).astype(int)
+    t = nxmfortemps(5,5,templates)
 
+    return lvl_connect(matrix,t, intended_connection)
 """
 Legacy:
 #########################################################

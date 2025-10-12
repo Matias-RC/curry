@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!-- Created with Inkscape (http://www.inkscape.org/) -->
+
+<svg
+   width="100"
+   height="100"
+   viewBox="0 0 26.458333 26.458333"
+   version="1.1"
+   id="svg1"
+   inkscape:version="1.4.2 (f4327f4, 2025-05-13)"
+   sodipodi:docname="box.svg"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <sodipodi:namedview
+     id="namedview1"
+     pagecolor="#ffffff"
+     bordercolor="#999999"
+     borderopacity="1"
+     inkscape:showpageshadow="2"
+     inkscape:pageopacity="0"
+     inkscape:pagecheckerboard="0"
+     inkscape:deskcolor="#d1d1d1"
+     inkscape:document-units="px"
+     inkscape:zoom="2.3692898"
+     inkscape:cx="20.470269"
+     inkscape:cy="44.317078"
+     inkscape:window-width="1366"
+     inkscape:window-height="705"
+     inkscape:window-x="-8"
+     inkscape:window-y="-8"
+     inkscape:window-maximized="1"
+     inkscape:current-layer="svg1" />
+  <defs
+     id="defs1">
+    <linearGradient
+       id="swatch1"
+       inkscape:swatch="solid">
+      <stop
+         style="stop-color:#000000;stop-opacity:1;"
+         offset="0"
+         id="stop1" />
+    </linearGradient>
+  </defs>
+  <rect
+     style="fill:#cccccc;stroke-width:0.203891;stroke-linecap:round"
+     id="rect2"
+     width="26.458332"
+     height="26.458332"
+     x="0"
+     y="0" />
+  <g
+     inkscape:label="Layer 1"
+     inkscape:groupmode="layer"
+     id="layer1">
+    <rect
+       style="fill:#784421;stroke:#d38d5f;stroke-width:1.91599998;stroke-dasharray:none;stroke-opacity:1"
+       id="rect1"
+       width="23.37764"
+       height="23.37764"
+       x="1.5403438"
+       y="1.5403438"
+       ry="4.9203506"
+       rx="4.9203506" />
+    <path
+       style="fill:#784421;stroke:#d38d5f;stroke-width:1.916;stroke-linecap:round;stroke-dasharray:none;stroke-opacity:1"
+       d="M 4.7624999,4.7624999 21.695833,21.695833"
+       id="path1"
+       sodipodi:nodetypes="cc" />
+  </g>
+</svg>
