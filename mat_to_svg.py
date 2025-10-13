@@ -115,7 +115,7 @@ def generate_svg_grid(matrix, template_map, output_file="output.svg"):
 if __name__ == "__main__":
     matrix = matrix_repr(generate_maze(8,8),8,8)
     generate_svg_grid(matrix, TEMPLATE_MAP, "empty_maze.svg")
-    matrix = prim_longer_halls(20,20, 0.3)
+    matrix = prim_longer_halls(20,20, 0.9)
     generate_svg_grid(matrix.tolist(), TEMPLATE_MAP, "empty_prim.svg")
     matrix_1 = easy_to_use_halls_without_connect(matrix.copy())
     generate_svg_grid(matrix_1.tolist(), TEMPLATE_MAP, "boxes_prim.svg")
