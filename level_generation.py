@@ -256,9 +256,10 @@ def hallgorithm(matrix):
                             if matrix[i+dy*2,j+dx*2] == 0:
                                 direction_id = (dy,dx)
                                 t[0] = 1
-                            item_val = 0
-                            for dyp, dxp in [(dx,dy),(-dx,-dy)]: #Only looking to the sides to check if clear thats rotation
-                                item_val += 1
+                        item_val = 0
+                        for dyp, dxp in [(dx,dy),(-dx,-dy)]: #Only looking to the sides to check if clear thats rotation
+                            item_val += 1
+                            if 0< i+dy+dyp < matrix.shape[0] and  0<j+dx+dxp<matrix.shape[1]:
                                 if matrix[i+dy+dyp,j+dx+dxp] == 0:
                                     t[item_val] = 1
                         works.append(t)
@@ -297,6 +298,9 @@ def max_hall_length(matrix, head):
             if matrix[pos[0]+yp,pos[1]+xp] == 0:
                 if matrix[pos[0]+yp*2,pos[1]+xp*2] == 0:
                     return tick_var
+                for ypp, xpp in dirs:
+                    if matrix[pos[0]+yp+xpp,pos[1]+xp+ypp] == 0:
+                        return tick_var
         if matrix[pos] == 1:
             return tick_var-1
 
@@ -544,7 +548,7 @@ def add_char_rand(matrix):
     matrix[pos] = 2
     return matrix
 
-def lvl_connect(m1,m2, form="any"):
+def lvl_connect(m1,m2, form="any", specific_pos="any"):
     y,x = m1.shape
     upper_row = m1[1, 1:-1]
     lower_row = m1[y-2, 1:-1]
@@ -564,16 +568,20 @@ def lvl_connect(m1,m2, form="any"):
     else:
         s = random.randint(0,3)
 
-    possible_cons = list(zip(np.argwhere(listed[s] == 0)))
-    if not possible_cons:
+    possible_cons = np.argwhere(listed[s] == 0).flatten()
+    if len(possible_cons) == 0:
         raise ValueError("Ensure exterior rows and/or columns (for non padded matrices) have zeroes in them")
-    selected_con = random.choice(possible_cons)
-    selected_con = selected_con[0].tolist()[0]
+    selected_con = random.choice(possible_cons).item()
+    if specific_pos != "any":
+        if s == 0 or s == 1:
+            selected_con = specific_pos[1]
+        elif s==2 or s==3:
+            selected_con = specific_pos[0]
+
     if s == 0:
-        lower_m2 = m2[m2.shape[0]-2, 1:-1]
-        m2_con = random.choice(list(zip(np.argwhere(lower_m2 == 0))))[0].tolist()[0]
+        m2_con = random.choice(np.argwhere(m2[m2.shape[0]-2, 1:-1] == 0).flatten()).item()
         m2_length = m2.shape[1]
-        m2_substract = m2_con+2 #we add 2 because first we skipped a beat [m2.shape[0]-2, 1:-1] and also indexes are not length
+        m2_substract = m2_con+2
         rm2 = m2_length-m2_substract
         m1_length = x
         m1_substract = selected_con+2
@@ -592,9 +600,9 @@ def lvl_connect(m1,m2, form="any"):
                 base[i,j+delta] = m2[i,j]
         base[m2.shape[0]-1,L-1] = 0
         return base
+
     if s == 1:
-        upper_m2 = m2[1, 1:-1]
-        m2_con = random.choice(list(zip(np.argwhere(upper_m2 == 0))))[0].tolist()[0]
+        m2_con = random.choice(np.argwhere(m2[1, 1:-1] == 0).flatten()).item()
         m2_length = m2.shape[1]
         m2_substract = m2_con+2
         rm2 = m2_length-m2_substract
@@ -615,9 +623,9 @@ def lvl_connect(m1,m2, form="any"):
                 base[i+y-1,j+delta] = m2[i,j]
         base[y-1,L-1] = 0
         return base
+
     if s == 2:
-        right_m2 = m2[1:-1, m2.shape[1]-2]
-        m2_con = random.choice(list(zip(np.argwhere(right_m2 == 0))))[0].tolist()[0]
+        m2_con = random.choice(np.argwhere(m2[1:-1, m2.shape[1]-2] == 0).flatten()).item()
         m2_height = m2.shape[0]
         m2_substract = m2_con+2
         rm2 = m2_height-m2_substract
@@ -638,9 +646,9 @@ def lvl_connect(m1,m2, form="any"):
                 base[i+delta,j] = m2[i,j]
         base[H-1,m2.shape[1]-1] = 0
         return base
+
     if s == 3:
-        left_m2 = m2[1:-1, 1]
-        m2_con = random.choice(list(zip(np.argwhere(left_m2 == 0))))[0].tolist()[0]
+        m2_con = random.choice(np.argwhere(m2[1:-1, 1] == 0).flatten()).item()
         m2_height = m2.shape[0]
         m2_substract = m2_con+2
         rm2 = m2_height-m2_substract
@@ -662,8 +670,9 @@ def lvl_connect(m1,m2, form="any"):
         base[H-1,x-1] = 0
         return base
 
+
 #t = nxmfortemps(5,5,templates)
-#print(lvl_connect(test_case,t, "right"))
+#print(lvl_connect(test_case,t, "left", [1,1]))
 
 
 """
@@ -730,20 +739,34 @@ def hall_boxes(matrix, heads, intended_conection_sides):
 Finally after lots of procesing you can reliably incorporate boxes into the halls
 """
 
+
 def incorporate_boxes_and_player(matrix, heads):
     idx = random.randrange(len(heads))
     h = heads.pop(idx)
-    matrix[h[0]] = 2
+    y, x = h[0]
+    matrix[y, x] = 2
+
+    # Surround h[0] with zeros (excluding contour)
+    y_max, x_max = matrix.shape
+    for dy in [-1, 0, 1]:
+        for dx in [-1, 0, 1]:
+            ny, nx = y + dy, x + dx
+            if (dy == 0 and dx == 0):
+                continue
+            if 0 < ny < y_max - 1 and 0 < nx < x_max - 1:
+                matrix[ny, nx] = 0
+
     for i in heads:
-        l = max_hall_length(matrix,i)
+        l = max_hall_length(matrix, i)
         if l < 2:
-            pass
-        else:
-            s = random.randint(1,l-1)
-            pos = (i[0][0]+i[1][0]*s,i[0][1]+i[1][1]*s)
-            matrix[i[0]] = 4
-            matrix[pos] = 3
+            continue
+        s = random.randint(1, l - 1)
+        pos = (i[0][0] + i[1][0] * s, i[0][1] + i[1][1] * s)
+        matrix[i[0]] = 4
+        matrix[pos] = 3
+
     return matrix
+
 
 def easy_to_use_halls_without_connect(matrix):
     l = hallgorithm(matrix)
@@ -771,7 +794,7 @@ def easy_to_use_halls_connect(matrix):
             else:
                 alts.append(i)
         if icl[1]:
-            if i[0][0] == y:
+            if i[0][0] == y-2:
                 cands.append(i)
             else:
                 alts.append(i)
@@ -781,18 +804,20 @@ def easy_to_use_halls_connect(matrix):
             else:
                 alts.append(i)
         if icl[3]:
-            if i[0][1] == x:
+            if i[0][1] == x-2:
                 cands.append(i)
             else:
                 alts.append(i)
     if cands:
         idx = random.randrange(len(cands))
-        _ = cands.pop(idx)
-    temp = cands + alts
+        con_pos_t = cands.pop(idx)[0]
+    else:
+        con_pos_t = "any"
+    temp = alts
     matrix = incorporate_boxes_and_player(matrix, temp).astype(int)
     t = nxmfortemps(5,5,templates)
 
-    return lvl_connect(matrix,t, intended_connection)
+    return lvl_connect(matrix,t, intended_connection,"any")
 """
 Legacy:
 #########################################################
@@ -1438,4 +1463,4 @@ def simple_generate(width, height, n_boxes, n_walls, seed=None):
             node = random.choice(nodes)
         return inver_manager.grid_state(node.state[0], node.state[1])
     grid = make_base(width, height, n_boxes, n_walls,seed)
-    return invert_states_random(grid, 2000)
+    return invert_states_random(grid, 8000)
