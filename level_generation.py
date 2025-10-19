@@ -399,7 +399,7 @@ def generate_simple_random_easy(n,m,k):
                 base[pos] = 4
                 for dy,dx in dirs:
                     if 0<pos[0]+dy*2<n+2 and 0<pos[1]+dx*2<m+2:
-                        if base[pos[0]+dy*2,pos[1]+dx*2] == 0 and (base[pos[0]+dy,pos[1]+dx] == 0 or base[pos[0]+dy,pos[1]+dx]==4):
+                        if base[pos[0]+dy*2,pos[1]+dx*2] == 0 and (base[pos[0]+dy,pos[1]+dx] == 0):
                             woking_directions.append((dy,dx))
                 if woking_directions:
                     break
@@ -417,7 +417,7 @@ footnotes:
     -if you need easyier levels change this (base[pos[0]+dy,pos[1]+dx] == 0 or base[pos[0]+dy,pos[1]+dx]==4)
 """
 
-#print(generate_simple_random_easy(8,8,4))
+#print(generate_simple_random_easy(10,10,12))
 
 """
 Box movement training phase
