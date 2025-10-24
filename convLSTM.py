@@ -14,64 +14,30 @@ class ConvLSTMCell(nn.Module):
     def __init__(self,
                  input_dim: int,
                  hidden_dim: int,
-                 kernel_size=(3, 3),
                  bias: bool = True,
-                 conv_block: Optional[nn.Module] = None,
-                 conv_block_out_channels: Optional[int] = None):
+                 conv_block: Optional[nn.Module] = None):
         super().__init__()
 
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
-        self.kernel_size = kernel_size if isinstance(kernel_size, tuple) else (kernel_size, kernel_size)
-        self.padding = (self.kernel_size[0] // 2, self.kernel_size[1] // 2)
         self.bias = bias
 
-        self.conv_block = conv_block
-        if self.conv_block is not None:
-            if not isinstance(conv_block_out_channels, int) or conv_block_out_channels <= 0:
-                raise ValueError("conv_block_out_channels must be a positive int when conv_block is provided")
-            self.conv_block_out_channels = conv_block_out_channels
-            # map conv_block features -> 4*hidden_dim
-            self.gate_conv = nn.Conv2d(in_channels=self.conv_block_out_channels,
-                                       out_channels=4 * self.hidden_dim,
-                                       kernel_size=(1, 1),
-                                       padding=0,
-                                       bias=self.bias)
+        self.gate_conv = conv_block
+        if self.gate_conv is not None:
+            pass
         else:
             # original single conv behavior: concat -> 4*hidden_dim
             self.gate_conv = nn.Conv2d(in_channels=self.input_dim + self.hidden_dim,
                                        out_channels=4 * self.hidden_dim,
-                                       kernel_size=self.kernel_size,
-                                       padding=self.padding,
+                                       kernel_size=(3,3),
+                                       padding=1,
                                        bias=self.bias)
 
     def forward(self, input_tensor: torch.Tensor, cur_state):
         h_cur, c_cur = cur_state
 
-        # checks
-        if input_tensor.dim() != 4 or h_cur.dim() != 4 or c_cur.dim() != 4:
-            raise ValueError("input_tensor, h_cur and c_cur must be 4-D tensors (B, C, H, W)")
-
-        b, _, h, w = input_tensor.shape
-        if h_cur.shape[0] != b or c_cur.shape[0] != b:
-            raise ValueError("Batch size of hidden/state must match input batch size")
-        if h_cur.shape[1] != self.hidden_dim or c_cur.shape[1] != self.hidden_dim:
-            raise ValueError(f"Hidden/state channel dimension must be {self.hidden_dim}")
-        if (h_cur.shape[2], h_cur.shape[3]) != (h, w) or (c_cur.shape[2], c_cur.shape[3]) != (h, w):
-            raise ValueError("Hidden/state spatial size must match input spatial size")
-
         combined = torch.cat([input_tensor, h_cur], dim=1)  # (B, input_dim + hidden_dim, H, W)
-
-        if self.conv_block is not None:
-            features = self.conv_block(combined)
-            if features.dim() != 4:
-                raise RuntimeError("conv_block must return a 4-D tensor (B, C, H, W)")
-            if features.shape[1] != self.conv_block_out_channels:
-                raise RuntimeError(
-                    f"conv_block returned {features.shape[1]} channels but conv_block_out_channels={self.conv_block_out_channels}")
-            gates = self.gate_conv(features)
-        else:
-            gates = self.gate_conv(combined)
+        gates = self.gate_conv(combined)
 
         cc_i, cc_f, cc_o, cc_g = torch.split(gates, self.hidden_dim, dim=1)
         i = torch.sigmoid(cc_i)
@@ -109,10 +75,8 @@ class ConvLSTM(nn.Module):
     def __init__(self,
                  input_dim: int,
                  hidden_dim: int,
-                 kernel_size=(3, 3),
                  bias: bool = True,
                  conv_block: Optional[nn.Module] = None,
-                 conv_block_out_channels: Optional[int] = None,
                  conv_block_characteristics: Optional[List[Dict]] = None):
         super().__init__()
 
@@ -121,7 +85,7 @@ class ConvLSTM(nn.Module):
 
         # If user provides conv_block_characteristics, we ignore conv_block input and build block here.
         if conv_block_characteristics is not None:
-            conv_block, conv_block_out_channels = self._build_conv_block_from_characteristics(
+            conv_block = self._build_conv_block_from_characteristics(
                 conv_block_characteristics, in_channels=self.input_dim + self.hidden_dim)
         else:
             # use provided conv_block or None
@@ -131,17 +95,15 @@ class ConvLSTM(nn.Module):
         # instantiate ConvLSTMCell with the prepared block (or defaults)
         self.cell = ConvLSTMCell(input_dim=self.input_dim,
                                  hidden_dim=self.hidden_dim,
-                                 kernel_size=kernel_size,
                                  bias=bias,
-                                 conv_block=conv_block,
-                                 conv_block_out_channels=conv_block_out_channels)
+                                 conv_block=conv_block)
 
     def forward(self, input_tensor: torch.Tensor, hidden_state=None):
         if input_tensor.dim() != 4:
             raise ValueError("input_tensor must be 4-D (B, C, H, W)")
 
         b, c_in, h, w = input_tensor.size()
-
+        print(h,w)
         # If no hidden_state provided, initialize
         if hidden_state is None:
             h_prev, c_prev = self._init_hidden(batch_size=b, image_size=(h, w))
@@ -221,7 +183,7 @@ class ConvLSTM(nn.Module):
                 - optionally 'out_channels' OR 'shape_transform' to update channel count
             - optionally 'shape_transform' callable(in_ch) -> out_ch for any spec to override channel tracking
         Returns:
-            (nn.Sequential(block), out_channels)
+            nn.Sequential(block)
         """
         layers = []
         cur_in = in_channels
@@ -290,7 +252,7 @@ class ConvLSTM(nn.Module):
                 raise ValueError(f"Unsupported layer type '{typ}' at index {idx}")
 
         block = nn.Sequential(*layers)
-        return block, cur_in
+        return block
 
 import torch
 import torch.nn as nn
@@ -311,18 +273,15 @@ class StackedConvLSTM(nn.Module):
     """
 
     def __init__(self,
-                 input_dim: int,
-                 hidden_dim: int,
-                 kernel_size=(3, 3),
+                 layer_input_dims: List[int],
+                 output_dim: int,
                  num_layers: int = 2,
                  bias: bool = True,
                  # Global conv_block or conv_block_characteristics (applies to all layers unless per-layer provided)
                  conv_block: Optional[nn.Module] = None,
-                 conv_block_out_channels: Optional[int] = None,
                  conv_block_characteristics: Optional[List[Dict]] = None,
                  # Optional per-layer overrides: must be list of length num_layers or None
                  per_layer_conv_block: Optional[Sequence[Optional[nn.Module]]] = None,
-                 per_layer_conv_block_out_channels: Optional[Sequence[Optional[int]]] = None,
                  per_layer_conv_block_characteristics: Optional[Sequence[Optional[List[Dict]]]] = None):
         """
         Args:
@@ -341,14 +300,11 @@ class StackedConvLSTM(nn.Module):
         if num_layers < 1:
             raise ValueError("num_layers must be >= 1")
         self.num_layers = int(num_layers)
-        self.input_dim = int(input_dim)
-        self.hidden_dim = int(hidden_dim)
-        self.kernel_size = kernel_size
+        self.output_dim = output_dim
         self.bias = bias
 
         # store global/defaults
         self._global_conv_block = conv_block
-        self._global_conv_block_out_channels = conv_block_out_channels
         self._global_conv_block_characteristics = conv_block_characteristics
 
         # normalize per-layer overrides into lists of length num_layers
@@ -363,13 +319,11 @@ class StackedConvLSTM(nn.Module):
             return [arg] * self.num_layers
 
         self._per_layer_conv_block = _normalize_arg(per_layer_conv_block, "per_layer_conv_block")
-        self._per_layer_conv_block_out_channels = _normalize_arg(per_layer_conv_block_out_channels,
-                                                                 "per_layer_conv_block_out_channels")
         self._per_layer_conv_block_characteristics = _normalize_arg(per_layer_conv_block_characteristics,
                                                                     "per_layer_conv_block_characteristics")
 
         # default layer input dims: first layer uses provided input_dim; further layers use hidden_dim
-        self._layer_input_dims = [self.input_dim] + [self.hidden_dim] * (self.num_layers - 1)
+        self._layer_input_dims = layer_input_dims
 
         # build the actual layers
         self._build_layers()
@@ -425,20 +379,6 @@ class StackedConvLSTM(nn.Module):
         if c_in != self._layer_input_dims[0]:
             raise ValueError(f"input_tensor channel dimension ({c_in}) does not match layer-0 input_dim ({self._layer_input_dims[0]})")
 
-        # validate provided hidden_state if present
-        if hidden_state is not None:
-            if not (isinstance(hidden_state, (list, tuple)) and len(hidden_state) == self.num_layers):
-                raise ValueError("hidden_state must be a list/tuple of length num_layers, each entry (h, c)")
-            for idx, (h_prev, c_prev) in enumerate(hidden_state):
-                if h_prev.shape[0] != b or c_prev.shape[0] != b:
-                    raise ValueError(f"Batch size mismatch in hidden_state at layer {idx}")
-                if h_prev.shape[1] != self.hidden_dim or c_prev.shape[1] != self.hidden_dim:
-                    raise ValueError(f"hidden_state channel dimension must be {self.hidden_dim} at layer {idx}")
-                if (h_prev.shape[2], h_prev.shape[3]) != (h, w) or (c_prev.shape[2], c_prev.shape[3]) != (h, w):
-                    raise ValueError(f"hidden_state spatial dims must match input spatial dims at layer {idx}")
-                if h_prev.device != input_tensor.device or c_prev.device != input_tensor.device:
-                    raise ValueError(f"hidden_state device mismatch at layer {idx}")
-
         current_input = input_tensor
         new_states = []
 
@@ -475,22 +415,21 @@ class StackedConvLSTM(nn.Module):
         for layer_idx in range(self.num_layers):
             # determine conv_block / characteristics for this layer: per-layer overrides win, otherwise global defaults
             layer_conv_block = self._per_layer_conv_block[layer_idx] if self._per_layer_conv_block[layer_idx] is not None else self._global_conv_block
-            layer_conv_block_out = (self._per_layer_conv_block_out_channels[layer_idx]
-                                    if self._per_layer_conv_block_out_channels[layer_idx] is not None
-                                    else self._global_conv_block_out_channels)
             layer_conv_block_chars = (self._per_layer_conv_block_characteristics[layer_idx]
                                       if self._per_layer_conv_block_characteristics[layer_idx] is not None
                                       else self._global_conv_block_characteristics)
 
             layer_in = self._layer_input_dims[layer_idx]
+            if self.num_layers == layer_idx+1:
+                hidden_dim = self.output_dim
+            else:
+                hidden_dim = self._layer_input_dims[layer_idx+1]
 
             # build the ConvLSTM for this layer. (ConvLSTM must be in scope)
             layer_module = ConvLSTM(input_dim=layer_in,
-                                    hidden_dim=self.hidden_dim,
-                                    kernel_size=self.kernel_size,
+                                    hidden_dim=hidden_dim,
                                     bias=self.bias,
                                     conv_block=layer_conv_block,
-                                    conv_block_out_channels=layer_conv_block_out,
                                     conv_block_characteristics=layer_conv_block_chars)
             modules.append(layer_module)
 
