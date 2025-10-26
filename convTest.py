@@ -79,13 +79,16 @@ convBlock2 = [
 model = StackedConvLSTM(layer_input_dims=[6,16], output_dim=32, num_layers=2, bias=True, 
                         per_layer_conv_block_characteristics=[convBlock1,convBlock2])
 
-B, C_in, H, W = 2, 6, 25, 25
+B, C_in, H, W = 10000, 6, 25, 25
 x = torch.randn(B, C_in, H, W)
 device = next(model.parameters()).device
-hid = [(torch.zeros(2, 16, 25, 25, device=device),
-                torch.zeros(2, 16, 25, 25, device=device)),
-        (torch.zeros(2, 32, 12, 12, device=device),
-                torch.zeros(2, 32, 12, 12, device=device))]
+hid = [(torch.zeros(10000, 16, 25, 25, device=device),
+                torch.zeros(10000, 16, 25, 25, device=device)),
+        (torch.zeros(10000, 32, 12, 12, device=device),
+                torch.zeros(10000, 32, 12, 12, device=device))]
+import time
+
+start = time.time()
 top_h, new_states = model(x, hid)
 
 print(top_h.shape)
@@ -98,3 +101,20 @@ for name, param in model.named_parameters():
     param_count = param.numel()  # Number of elements in the parameter tensor
     total_params += param_count
 print(total_params)
+
+pre_layer = nn.MaxPool2d(kernel_size=(2, 2), stride=2, padding=0)
+
+mlp = nn.Sequential(
+    nn.Linear(1152, 64),  
+    nn.ReLU(),            
+    nn.Linear(64, 64),   
+    nn.ReLU(),            
+    nn.Linear(64, 64),
+    nn.ReLU(),
+    nn.Linear(64, 5)
+)
+
+out_policy_and_value = mlp(torch.flatten(pre_layer(top_h), start_dim=1))
+end = time.time()
+print(end-start)
+print(out_policy_and_value.shape)
