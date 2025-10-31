@@ -3,7 +3,7 @@ import torch.nn as nn
 from typing import List, Dict, Optional, Sequence, Tuple
 
 
-class FiLMConvLSTMCell(nn.Module):
+class MemoryCLC(nn.Module):
     """ConvLSTMCell that expects a conv_block which accepts a tuple (input, h_cur)."""
     def __init__(self, input_dim: int, hidden_dim: int, bias: bool = True, conv_block: Optional[nn.Module] = None):
         super().__init__()
@@ -14,9 +14,9 @@ class FiLMConvLSTMCell(nn.Module):
         self.bias = bias
         self.gate_conv = conv_block
 
-    def forward(self, input_tensor: torch.Tensor, cur_state, FiLM_list):
+    def forward(self, input_tensor: torch.Tensor, cur_state, mem):
         h_cur, c_cur = cur_state
-        gates = self.gate_conv((input_tensor, h_cur), FiLM_list)  # conv_block must accept tuple
+        mem, gates = self.gate_conv((input_tensor, h_cur, mem))  # conv_block must accept tuple
         cc_i, cc_f, cc_o, cc_g = torch.split(gates, self.hidden_dim, dim=1)
         i = torch.sigmoid(cc_i)
         f = torch.sigmoid(cc_f)
@@ -24,7 +24,7 @@ class FiLMConvLSTMCell(nn.Module):
         g = torch.tanh(cc_g)
         c_next = f * c_cur + i * g
         h_next = o * torch.tanh(c_next)
-        return h_next, c_next
+        return h_next, c_next, mem
 
     def init_hidden(self, batch_size: int, image_size: Tuple[int, int]):
         h, w = image_size
@@ -33,7 +33,7 @@ class FiLMConvLSTMCell(nn.Module):
                 torch.zeros(batch_size, self.hidden_dim, h, w, device=device))
 
 
-class FiLMConvLSTM(nn.Module):
+class MemoryConvLSTM(nn.Module):
     """Single ConvLSTM layer. Requires conv_block_characteristics (list of 'custom' specs)."""
     def __init__(self, input_dim: int, hidden_dim: int, bias: bool = True,
                  conv_block_characteristics: Optional[List[Dict]] = None):
@@ -43,10 +43,11 @@ class FiLMConvLSTM(nn.Module):
         # build block assuming in_channels = input_dim + hidden_dim
         conv_block = self._build_conv_block_from_characteristics(conv_block_characteristics,
                                                                  in_channels=input_dim + hidden_dim)
-        self.cell = FiLMConvLSTMCell(input_dim=input_dim, hidden_dim=hidden_dim, bias=bias, conv_block=conv_block)
+        self.cell = MemoryCLC(input_dim=input_dim, hidden_dim=hidden_dim, bias=bias, conv_block=conv_block)
 
-    def forward(self, input_tensor: torch.Tensor, hidden_state, FiLM_list):
-        return self.cell(input_tensor, hidden_state, FiLM_list)
+    def forward(self, input_tensor: torch.Tensor, hidden_state, memory):
+        h_prev, c_prev = hidden_state
+        return self.cell(input_tensor, (h_prev, c_prev), memory)
 
     def _init_hidden(self, batch_size: int, image_size: Tuple[int, int]):
         return self.cell.init_hidden(batch_size, image_size)
@@ -55,7 +56,7 @@ class FiLMConvLSTM(nn.Module):
         """
         Only support 'custom' specs. Each spec must be:
            {'type': 'custom', 'layer': nn.Module, optionally 'out_channels': int}
-        The returned nn.Sequential is the conv_block used by ConvLSTMCell and must accept tuples.
+        The returned nn.Sequential is the conv_block used by MemoryConvLSTMCell and must accept tuples.
         """
         layers = []
         cur_in = in_channels
@@ -74,9 +75,9 @@ class FiLMConvLSTM(nn.Module):
         return nn.Sequential(*layers)
 
 
-class FiLMStackedConvLSTM(nn.Module):
+class StackedMemoryConvLSTM(nn.Module):
     """
-    Stacked ConvLSTM. Only accepts per_layer_conv_block_characteristics: a sequence of length num_layers,
+    Stacked MemoryConvLSTM. Only accepts per_layer_conv_block_characteristics: a sequence of length num_layers,
     where each entry is a list[dict] of custom specs (no defaults allowed).
     """
     def __init__(self, layer_input_dims: List[int], output_dim: int, num_layers: int = 2, bias: bool = True,
@@ -98,18 +99,20 @@ class FiLMStackedConvLSTM(nn.Module):
         self._per_layer_conv_block_characteristics = list(per_layer_conv_block_characteristics)
         self._build_layers()
 
-    def forward(self, input_tensor: torch.Tensor, hidden_state: Sequence[Tuple[torch.Tensor, torch.Tensor]],
-                FiLM_features: Sequence[Sequence[torch.Tensor]]):
+    def forward(self, input_tensor: torch.Tensor, hidden_state: Sequence[Tuple[torch.Tensor, torch.Tensor]]
+                , selected_memory: Sequence[Tuple[torch.Tensor, torch.Tensor]]):
         current_input = input_tensor
         new_states = []
+        new_memory = []
         for layer_idx, layer in enumerate(self.layers):
-            h_prev, c_prev = hidden_state[layer_idx]
-            layer_FiLM = FiLM_features[layer_idx]
-            h_next, c_next = layer(current_input, hidden_state=(h_prev, c_prev), film=layer_FiLM)
+            h_prev, c_prev  = hidden_state[layer_idx]
+            h_next, c_next, updated_memory = layer(current_input, hidden_state=(h_prev, c_prev), memory=selected_memory[layer_idx])
             new_states.append((h_next, c_next))
+            new_memory.append(updated_memory)
             current_input = h_next
         top_h = new_states[-1][0]
-        return top_h, new_states
+
+        return top_h, new_states, new_memory
 
     def _init_hidden(self, batch_size: int, image_size: Tuple[int, int]):
         states = []
@@ -128,7 +131,7 @@ class FiLMStackedConvLSTM(nn.Module):
                 hidden_dim = self.output_dim
             else:
                 hidden_dim = self._layer_input_dims[layer_idx + 1]
-            layer_module = FiLMConvLSTM(input_dim=layer_in, hidden_dim=hidden_dim, bias=self.bias,
+            layer_module = MemoryConvLSTM(input_dim=layer_in, hidden_dim=hidden_dim, bias=self.bias,
                                     conv_block_characteristics=layer_chars)
             modules.append(layer_module)
         self.layers = nn.ModuleList(modules)

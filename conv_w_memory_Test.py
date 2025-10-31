@@ -1,6 +1,7 @@
 import torch.nn as nn
 import torch
-from convLSTM import ConvLSTM, ConvLSTMCell, StackedConvLSTM
+#from convLSTM import ConvLSTM, ConvLSTMCell, StackedConvLSTM
+from convLSTM_memory import MemoryCLC, MemoryConvLSTM, StackedMemoryConvLSTM
 
 
 class ApplyToInput(nn.Module):
@@ -11,6 +12,12 @@ class ApplyToInput(nn.Module):
     def forward(self, xy):
         return self.layer(xy[0]), xy[1]
 
+class MergeWithMemory(nn.Module):
+    def __init__(self):
+        super().__init__()
+    def foward(self, xyz):
+        combined = torch.cat([xyz[1],xyz[2]], dim=1)
+        return (xyz[0], combined)
 
 class ConcatAndApply(nn.Module):
     def __init__(self, layer: nn.Module):
