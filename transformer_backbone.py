@@ -25,6 +25,10 @@ class contextualizationModule(nn.Module):
         #From now on manual customization (TODO: Actually make this class good)
         self.layer1_cross_att = None
 
+class CustomMultiheadQueryAttention(nn.Module):
+    def __init__(self, embed_dim, kv_dim, out_dim, num_heads, batch_first=True, dropout=0.0):
+        pass
+
 
 class AttLSTMCell(nn.Module):
     def __init__(self, gate_projector: Gate_Convertor, d: int, num_heads: int, h_length: int, dropout: float = 0.0):

@@ -10,7 +10,7 @@ class ApplyToInput(nn.Module):
         self.layer = layer
 
     def forward(self, xy):
-        return self.layer(xy[0]), xy[1]
+        return (self.layer(xy[0]), xy[1])
 
 class MergeWithMemory(nn.Module):
     def __init__(self):
@@ -45,6 +45,10 @@ class PrintInAndOut(nn.Module):
 convBlock1 = [
     {
         "type": "custom",
+        "layer": MergeWithMemory()
+    },
+    {
+        "type": "custom",
         "layer": ConcatAndApply(nn.Conv2d(in_channels=22, out_channels=16, kernel_size=(3, 3), stride=1, padding=1)),
         "out_channels": 16
     },
@@ -60,6 +64,10 @@ convBlock1 = [
 ]
 
 convBlock2 = [
+    {
+        "type": "custom",
+        "layer": MergeWithMemory()
+    },
     {
         "type": "custom",
         "layer": ApplyToInput(nn.Conv2d(in_channels=16, out_channels=32, kernel_size=(4, 4), stride=1, padding=1))
