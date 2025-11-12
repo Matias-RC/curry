@@ -133,7 +133,79 @@ class contextualizationModule(nn.Module):
 
         return x
 
+class BoardEncoderCNN(nn.Module):
+    """
+    Encodes Sokoban board into a (B, 64, 12, 12) feature map and flattened tokens (B, 144, 64).
+    Layer spec (applied in order):
+      - conv1: in=6, out=32, k=5, s=1, p=2  -> 25x25 -> 25x25
+      - conv2: in=32, out=64, k=4, s=2, p=1 -> 25x25 -> 12x12
+      - conv3: in=64, out=64, k=3, s=1, p=1 -> 12x12 -> 12x12
+    """
+    def __init__(self, in_channels: int = 6, base_channels: int = 32, use_bn: bool = False):
+        super().__init__()
+        self.use_bn = use_bn
 
+        # conv1 -> (B, 32, 25, 25)
+        self.conv1 = nn.Conv2d(in_channels, base_channels, kernel_size=5, stride=1, padding=2)
+        self.bn1 = nn.BatchNorm2d(base_channels) if use_bn else nn.Identity()
+
+        # conv2 -> (B, 64, 12, 12)
+        self.conv2 = nn.Conv2d(base_channels, base_channels * 2, kernel_size=4, stride=2, padding=1)
+        self.bn2 = nn.BatchNorm2d(base_channels * 2) if use_bn else nn.Identity()
+
+        # conv3 -> (B, 64, 12, 12)
+        self.conv3 = nn.Conv2d(base_channels * 2, base_channels * 2, kernel_size=3, stride=1, padding=1)
+        self.bn3 = nn.BatchNorm2d(base_channels * 2) if use_bn else nn.Identity()
+
+        # small conv head optional (identity here)
+        self.out_channels = base_channels * 2  # 64 by default
+
+        # init
+        self._init_weights()
+
+    def _init_weights(self):
+        # standard conv init
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, nonlinearity="relu")
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+            elif isinstance(m, nn.BatchNorm2d):
+                nn.init.ones_(m.weight)
+                nn.init.zeros_(m.bias)
+
+    def forward(self, x: torch.Tensor):
+        """
+        x: (B, C=6, H=25, W=25)
+        returns:
+          feat_map: (B, 64, 12, 12)
+          tokens:   (B, 144, 64)   # 12*12 = 144
+        """
+        # conv1
+        x = self.conv1(x)
+        x = self.bn1(x)
+        x = F.relu(x, inplace=True)
+
+        # conv2
+        x = self.conv2(x)
+        x = self.bn2(x)
+        x = F.relu(x, inplace=True)
+
+        # conv3
+        x = self.conv3(x)
+        x = self.bn3(x)
+        x = F.relu(x, inplace=True)
+
+        # final shape check
+        B, C, H, W = x.shape
+        assert C == self.out_channels, f"expected out channels {self.out_channels}, got {C}"
+        assert H == 12 and W == 12, f"expected spatial 12x12, got {H}x{W}"
+
+        # flatten to tokens: (B, 144, 64)
+        # permute to (B, H, W, C) -> reshape (B, H*W, C)
+        tokens = x.permute(0, 2, 3, 1).contiguous().view(B, H * W, C)
+        return x, tokens
+    
 class AttLSTMCell(nn.Module):
     def __init__(self, gate_projector: Gate_Convertor, d: int, num_heads: int, h_length: int, dropout: float = 0.0):
         """
@@ -232,3 +304,124 @@ class StackedAttLSTM(nn.Module):
             current = h_next
         top_h = new_states[-1][0]
         return top_h, new_states
+
+if __name__ == "__main__":
+    import torch
+    torch.manual_seed(0)
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    # params
+    B = 2
+    in_channels = 6
+    H = W = 25
+    d = 64
+    num_cells = 3
+    h_length = 32
+    num_heads = 4
+    hidden_seq_len = num_cells * h_length * 2  # hidden + cell for each layer
+
+    # instantiate modules
+    encoder = BoardEncoderCNN(in_channels=in_channels, base_channels=32, use_bn=False).to(device)
+    contextualizer = contextualizationModule(embed_dim=d, kv_dim=d, num_heads=num_heads,
+                                            hidden_seq_len=hidden_seq_len, dropout=0.0).to(device)
+    stacked = StackedAttLSTM(d=d, num_heads=num_heads, h_length=h_length, num_cells=num_cells, dropout=0.0).to(device)
+
+    # random board batch
+    board = torch.randn(B, in_channels, H, W, device=device)
+
+    # forward encoder -> tokens
+    feat_map, tokens = encoder(board)                         # feat_map: (B,64,12,12)  tokens: (B,144,64)
+    assert tokens.shape == (B, 144, d)
+
+    # produce slots and split into initial hidden/cell states
+    slots = contextualizer(tokens)                            # (B, hidden_seq_len, d)
+    assert slots.shape == (B, hidden_seq_len, d)
+
+    hidden_slots, cell_slots = torch.chunk(slots, 2, dim=1)  # each (B, hidden_seq_len/2, d)
+    # reshape into per-layer tuples
+    hidden_slots = hidden_slots.view(B, num_cells, h_length, d)
+    cell_slots = cell_slots.view(B, num_cells, h_length, d)
+
+    hidden_state = []
+    for i in range(num_cells):
+        h_prev = hidden_slots[:, i, :, :].contiguous()
+        c_prev = cell_slots[:, i, :, :].contiguous()
+        hidden_state.append((h_prev, c_prev))
+
+    # zero grads, forward through stacked attentive LSTM
+    for p in list(contextualizer.parameters()):
+        if p.grad is not None:
+            p.grad.detach_()
+            p.grad.zero_()
+
+    top_h, new_states = stacked(tokens, hidden_state)        # top_h: (B, h_length, d)
+
+    # simple loss and backward
+    loss = top_h.mean()
+    #loss = (top_h.mean() * 1000000000)
+
+    loss.backward()
+
+    # prints
+    print("feat_map", feat_map.shape)
+    print("tokens", tokens.shape)
+    print("slots", slots.shape)
+    print("top_h", top_h.shape)
+    q_grad = contextualizer.layer1_cross_att.q_params.grad
+    print("q_params.grad is None?", q_grad is None)
+    if q_grad is not None:
+        print("q_params.grad mean abs:", q_grad.abs().mean().item())
+    else:
+        print("No gradient found for q_params; check computation graph.")
+    models = {"encoder": encoder, "contextualizer": contextualizer, "stacked": stacked}
+    params = []
+    for mname, m in models.items():
+        for name, p in m.named_parameters():
+            params.append((f"{mname}.{name}", p))
+
+    rows = []
+    total_abs = 0.0
+    total_sum = 0.0
+    total_elems = 0
+
+    for name, p in params:
+        g = p.grad
+        if g is None:
+            mean_grad = float("nan")
+            mean_abs = float("nan")
+            got = False
+        else:
+            mean_grad = g.mean().item()
+            mean_abs = g.abs().mean().item()
+            got = True
+            total_abs += g.abs().sum().item()
+            total_sum += g.sum().item()
+            total_elems += p.numel()
+        rows.append((name, tuple(p.shape), got, mean_grad, mean_abs))
+
+    # Try to show with pandas if available (nicer)
+    try:
+        import pandas as pd
+        df = pd.DataFrame(rows, columns=["param", "shape", "has_grad", "mean_grad", "mean_abs_grad"])
+        # show rounded floats for readability
+        df["mean_grad"] = df["mean_grad"].apply(lambda x: float(f"{x:.6e}") if not (isinstance(x, float) and math.isnan(x)) else float("nan"))
+        df["mean_abs_grad"] = df["mean_abs_grad"].apply(lambda x: float(f"{x:.6e}") if not (isinstance(x, float) and math.isnan(x)) else float("nan"))
+        print(df.to_string(index=False))
+    except Exception:
+        # fallback pretty print
+        fmt = "{:60s} {:15s} {:6s} {:14s} {:14s}"
+        print(fmt.format("param", "shape", "got", "mean_grad", "mean_abs"))
+        for name, shape, got, mg, ma in rows:
+            mg_s = f"{mg:.6e}" if not (isinstance(mg, float) and math.isnan(mg)) else "None"
+            ma_s = f"{ma:.6e}" if not (isinstance(ma, float) and math.isnan(ma)) else "None"
+            print(fmt.format(name, str(shape), str(got), mg_s, ma_s))
+
+    # overall metrics (weighted by parameter count)
+    if total_elems > 0:
+        overall_mean_abs = total_abs / total_elems
+        overall_mean = total_sum / total_elems
+        print("\nOverall mean gradient (element-wise):", f"{overall_mean:.6e}")
+        print("Overall mean absolute gradient (element-wise):", f"{overall_mean_abs:.6e}")
+    else:
+        print("\nNo gradients found on any parameters.")
