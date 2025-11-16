@@ -1,6 +1,6 @@
 import torch.nn as nn
 import torch
-#from convLSTM import ConvLSTM, ConvLSTMCell, StackedConvLSTM
+from convLSTM_copy import ConvLSTM, ConvLSTMCell, StackedConvLSTM
 from convLSTM_memory import MemoryCLC, MemoryConvLSTM, StackedMemoryConvLSTM
 
 
