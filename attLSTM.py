@@ -207,7 +207,7 @@ class BoardEncoderCNN(nn.Module):
         return x, tokens
     
 class AttLSTMCell(nn.Module):
-    def __init__(self, gate_projector: Gate_Convertor, d: int, num_heads: int, h_length: int, dropout: float = 0.0):
+    def __init__(self, d: int, num_heads: int, h_length: int, dropout: float = 0.0):
         """
         Attentive LSTM cell that:
           - applies self-attention to h_cur with a pre-norm residual
@@ -218,7 +218,7 @@ class AttLSTMCell(nn.Module):
         super().__init__()
         assert d % num_heads == 0, "d must be divisible by num_heads for MultiheadAttention"
 
-        self.gate_projector = gate_projector
+        self.gate_projector = Gate_Convertor(d)
         self.d = d
         self.h_length = h_length
 
@@ -227,8 +227,13 @@ class AttLSTMCell(nn.Module):
         # cross-attention where queries are gate slices
         self.mha = nn.MultiheadAttention(embed_dim=d, num_heads=num_heads, kdim=d, vdim=d, batch_first=True, dropout=dropout)
 
+        self.i_gate = nn.Linear(d,d,bias=False)
+        self.f_gate = nn.Linear(d,d,bias=False)
+        self.o_gate = nn.Linear(d,d,bias=False)
+        self.g_gate = nn.Linear(d,d,bias=False)
         # LayerNorms for pre-norm patterns and output normalization after residual
         self.ln_self = nn.LayerNorm(d)
+        self.ln_cross = nn.LayerNorm(d)
         self.ln_out = nn.LayerNorm(d)
         self.dropout = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
 
@@ -257,11 +262,15 @@ class AttLSTMCell(nn.Module):
 
         # Cross-attend queries (gate queries) to input_tensor (keys/values)
         attn_out, _ = self.mha(x_split, input_tensor, input_tensor)           # (B, 4L, d)
+        attn_out = self.ln_cross(attn_out)
 
         # Re-chunk to (B, L, 4d)
         attn_rechunk = attn_out.view(B, 4, L, d).permute(0, 2, 1, 3).reshape(B, L, 4 * d)  # (B, L, 4d)
         cc_i, cc_f, cc_o, cc_g = torch.chunk(attn_rechunk, chunks=4, dim=-1)  # each (B, L, d)
-
+        cc_i = self.i_gate(cc_i)
+        cc_f = self.f_gate(cc_f)
+        cc_o = self.o_gate(cc_o)
+        cc_g = self.g_gate(cc_g)
         # LSTM-like gating
         i = torch.sigmoid(cc_i)
         f = torch.sigmoid(cc_f)
@@ -282,12 +291,12 @@ class AttLSTMCell(nn.Module):
 class StackedAttLSTM(nn.Module):
     def __init__(self, d: int, num_heads: int, h_length: int, num_cells: int, dropout: float = 0.0):
         super().__init__()
-        # NOTE: Gate_Convertor is shared across layers by default; you can change to per-layer if you prefer
-        self.gates = Gate_Convertor(d)
+        # NOTE: Gate_Convertor was shared across layers by default;
+        #self.gates = Gate_Convertor(d)
         layers = []
         for _ in range(num_cells):
             # each layer gets its own AttLSTMCell (and hence its own base states)
-            layers.append(AttLSTMCell(self.gates, d=d, num_heads=num_heads, h_length=h_length, dropout=dropout))
+            layers.append(AttLSTMCell(d=d, num_heads=num_heads, h_length=h_length, dropout=dropout))
         self.layers = nn.ModuleList(layers)
         self.d = d
         self.num_cells = num_cells
@@ -307,6 +316,7 @@ class StackedAttLSTM(nn.Module):
 
 if __name__ == "__main__":
     import torch
+    from collections import defaultdict
     torch.manual_seed(0)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -315,14 +325,14 @@ if __name__ == "__main__":
     B = 2
     in_channels = 6
     H = W = 25
-    d = 64
+    d = 128
     num_cells = 3
     h_length = 32
     num_heads = 4
     hidden_seq_len = num_cells * h_length * 2  # hidden + cell for each layer
 
     # instantiate modules
-    encoder = BoardEncoderCNN(in_channels=in_channels, base_channels=32, use_bn=False).to(device)
+    encoder = BoardEncoderCNN(in_channels=in_channels, base_channels=d//2, use_bn=False).to(device)
     contextualizer = contextualizationModule(embed_dim=d, kv_dim=d, num_heads=num_heads,
                                             hidden_seq_len=hidden_seq_len, dropout=0.0).to(device)
     stacked = StackedAttLSTM(d=d, num_heads=num_heads, h_length=h_length, num_cells=num_cells, dropout=0.0).to(device)
@@ -425,3 +435,23 @@ if __name__ == "__main__":
         print("Overall mean absolute gradient (element-wise):", f"{overall_mean_abs:.6e}")
     else:
         print("\nNo gradients found on any parameters.")
+    
+    def model_summary(model: torch.nn.Module) -> dict:
+        """Return counts: num parameter tensors, total scalars, trainable scalars,
+        and params per top-level submodule."""
+        num_tensors = sum(1 for _ in model.parameters())
+        total_scalars = sum(p.numel() for p in model.parameters())
+        trainable_scalars = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        per_module = defaultdict(int)
+        for name, p in model.named_parameters():
+            top = name.split(".")[0]  # e.g., "stack", "pool_proj", etc.
+            per_module[top] += p.numel()
+        return {
+            "num_tensors": num_tensors,
+            "total_scalars": total_scalars,
+            "trainable_scalars": trainable_scalars,
+            "per_module": dict(per_module)
+        }
+    print(model_summary(encoder))
+    print(model_summary(contextualizer))
+    print(model_summary(stacked))
