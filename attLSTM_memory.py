@@ -4,6 +4,19 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import List, Tuple, Optional
 
+
+"""
+contextualization module such that before entering the stack the input is fused via attention with the memory provided.
+    - Contextualization module
+    |   - recives (input,  memory)
+    |   - then does co-attention() with memory and input basically crossAtt(memory, input, input) concat  crossAtt(input, memory, memory)
+    |   - The result is residually conected and we exectue three layers of self attention in this then it is given to the cell
+    - New Cell module
+    |   - exact same procedure as original cell but at the end we contextualize input with hiddenstate vias cross att 
+        (maybe contextualizing only the memory sub sequence)
+
+"""
+
 class Gate_Convertor(nn.Module):
     def __init__(self, d: int):
         super().__init__()
@@ -15,64 +28,10 @@ class Gate_Convertor(nn.Module):
 
     def forward(self, h: torch.Tensor) -> torch.Tensor:
         return self.dense(h)  # (B, L, 4d)
-    
-"""
-Attention LSTM with sparse memory: One should focus on parameter equivalence for same dimentionality, as well as
-managing a way to make the parameters contextualize apropiately. That is why im going to begin by testing the
-    - Full sized cell
-    |   - Recives (input, hidden state, cell state, memory)
-    |   - All inputs are tensors that have last dimention = d
-    |   - contextualization module with two sets of cross attention with residual conections att(input, memory, memory) || att(hidden state, memory, memory)
-    |   -SelfAtt(input)
-    |   -then natural cell procedure. selfAtt(hidden)->projection matrix->Reshape->attention(gates, input,input)->projec the gates -> LSTM
-    |   -With the resulting hidden crossAtt(input,new hidden, new hidden)
-    |   -then we update memory crossAtt(memory, input,input)
-""" 
 
-class SPARSEAttLSTMCell_1p0(nn.Module):
-    def __init__(self, d: int, num_heads: int, h_length, dropout: float=0.0):
-        super().__init__()
-        assert d%num_heads == 0, "d must be divisible by num_heads for MultiheadAttention"
-
-        self.cross_input_memory_1 = nn.MultiheadAttention(embed_dim=d, num_heads=num_heads, kdim=d, vdim=d, batch_first=True, dropout=dropout)
-        self.cross_hidden_memory_1 = nn.MultiheadAttention(embed_dim=d, num_heads=num_heads, kdim=d, vdim=d, batch_first=True, dropout=dropout)
-        self.input_proj_1 = nn.Linear(d,d,bias=True)
-        self.self_input_1 = nn.MultiheadAttention(embed_dim=d, num_heads=num_heads, kdim=d, vdim=d, batch_first=True, dropout=dropout)
-        self.hidden_proj_1 = nn.Linear(d,d,bias=True)
-        self.self_hidden_1 = nn.MultiheadAttention(embed_dim=d, num_heads=num_heads, kdim=d, vdim=d, batch_first=True, dropout=dropout)
-        self.hidden_proj_2 = nn.Linear(d,4*d, bias=True)
-        self.cross_gates_input = nn.MultiheadAttention(embed_dim=d, num_heads=num_heads, kdim=d, vdim=d, batch_first=True, dropout=dropout)
-        self.i_gate = nn.Linear(d,d,bias=False)
-        self.f_gate = nn.Linear(d,d,bias=False)
-        self.o_gate = nn.Linear(d,d,bias=False)
-        self.g_gate = nn.Linear(d,d,bias=False)
-        self.cross_input_newhidden = nn.MultiheadAttention(embed_dim=d, num_heads=num_heads, kdim=d, vdim=d, batch_first=True, dropout=dropout)
-        self.cross_memory_input = nn.MultiheadAttention(embed_dim=d, num_heads=num_heads, kdim=d, vdim=d, batch_first=True, dropout=dropout)
-
-
-"""
-Although cell 1.0 might work it is vey expensive to execute all of these attention methods at every cell step of the stack it might be
-in our best interest not to differentiate the memory from the inout that much this way we could organize a contextualization module such that
-before entering the stack the input is fused via attention with the memory provided.
-    - Contextualization module
-    |   - recives (input,  memory)
-    |   - then does co-attention() with memory and input basically crossAtt(memory, input, input) concat  crossAtt(input, memory, memory)
-    |   - The result is residually conected and we exectue three layers of self attention in this then it is given to the cell
-    - New Cell module
-    |   - exact same procedure as original cell but at the end we contextualize input with hiddenstate vias cross att 
-        (maybe contextualizing only the memory sub sequence)
-
-"""
 
 class sparse_AttLSTMCell(nn.Module):
     def __init__(self, d: int, num_heads: int, h_length: int, mem_length: int, input_length:int, dropout: float = 0.0):
-        """
-        Attentive LSTM cell that:
-          - applies self-attention to h_cur with a pre-norm residual
-          - computes gates via gate_projector(h_cur) and cross-attends those queries to input_tensor
-          - computes next c and h
-          - adds residual from previous h_cur to h_next (then normalizes)
-        """
         super().__init__()
         assert d % num_heads == 0, "d must be divisible by num_heads for MultiheadAttention"
 
@@ -93,7 +52,7 @@ class sparse_AttLSTMCell(nn.Module):
         # LayerNorms for pre-norm patterns and output normalization after residual
         self.ln_self = nn.LayerNorm(d)
         self.ln_cross = nn.LayerNorm(d)
-        self.ln_out_h = nn.LayerNorm(d)
+        self.ln_out = nn.LayerNorm(d)
         self.ln_m_1 = nn.LayerNorm(d)
         self.ln_m_2 = nn.LayerNorm(d)        
         self.ln_m_3 = nn.LayerNorm(d)
@@ -148,11 +107,11 @@ class sparse_AttLSTMCell(nn.Module):
         h_next = self.ln_out(h_next)
 
         input_data, x = torch.split(input_tensor, [self.input_length, self.mem_length], dim=1)
-        x = x + self.mha_out_contextualization(x, h_next, h_next)
+        x = x + self.mha_out_contextualization(x, h_next, h_next)[0]
         x = self.ln_m_1(x)
         x = x + self.ffn_1(x)
         x = self.ln_m_2(x)
-        x = x + self.mha_self_contextualization(x, x, x)
+        x = x + self.mha_self_contextualization(x, x, x)[0]
         x = self.ln_m_3(x)
         x = x + self.ffn_2(x)
         x = self.ln_m_4(x)
@@ -161,6 +120,7 @@ class sparse_AttLSTMCell(nn.Module):
 
 class att_block(nn.Module):
     def __init__(self, d, h, num_heads, dropout):
+        super().__init__()
         self.mha = nn.MultiheadAttention(embed_dim=d, num_heads=num_heads, kdim=d, vdim=d, batch_first=True, dropout=dropout)
         self.ln_1= nn.LayerNorm(d)      
         self.ffn = nn.Sequential(
@@ -171,12 +131,13 @@ class att_block(nn.Module):
         self.ln_2 = nn.LayerNorm(d)      
 
     def forward(self, x):
-        x = self.ln_1(x+self.mha(x,x,x))
+        x = self.ln_1(x+self.mha(x,x,x)[0])
         x = self.ln_2(x + self.ffn(x))    
         return x
     
 class FusionGate(nn.Module):
     def __init__(self, d: int, num_heads: int, num_att_blocks: int, hidden_dim: int, dropout: float = 0.0):
+        super().__init__()
         self.mha_contextualize_memory = nn.MultiheadAttention(embed_dim=d, num_heads=num_heads, kdim=d, vdim=d, batch_first=True, dropout=dropout)
         self.mha_contextualize_input = nn.MultiheadAttention(embed_dim=d, num_heads=num_heads, kdim=d, vdim=d, batch_first=True, dropout=dropout)
         self.ln_m_1 = nn.LayerNorm(d)
@@ -198,10 +159,10 @@ class FusionGate(nn.Module):
 
 
     def forward(self, i, m):
-        y = self.ln_i_1(i+self.mha_contextualize_input(i, m, m))
+        y = self.ln_i_1(i+self.mha_contextualize_input(i, m, m)[0])
         y = self.ln_i_2(y + self.ffn_i(y))
 
-        x = self.ln_m_1(m+self.mha_contextualize_memory(m, i, i))
+        x = self.ln_m_1(m+self.mha_contextualize_memory(m, i, i)[0])
         x = self.ln_i_2(x + self.ffn_i(x))      
 
         joint = torch.cat([y, x], dim=1)
