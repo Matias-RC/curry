@@ -93,6 +93,8 @@ class PlusOneOp(Operator):
         b = torch.tensor([1.0], dtype=torch.float32)
         super().__init__(length=1, shapes=(total_inputs, 1), weights=[w], biases=[b])
 
+
+
 class NotOp(Operator):
     """
     Negates a binary input (0 -> 1, 1 -> 0).

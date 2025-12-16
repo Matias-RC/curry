@@ -113,74 +113,74 @@ def generate_svg_grid(matrix, template_map, output_file="output.svg"):
 
 # === Run ===
 if __name__ == "__main__":
-    matrix = matrix_repr(generate_maze(8,8),8,8)
-    generate_svg_grid(matrix, TEMPLATE_MAP, "empty_maze.svg")
-    matrix = prim_longer_halls(25,25, 0.8)
-    generate_svg_grid(matrix.tolist(), TEMPLATE_MAP, "empty_prim.svg")
-    matrix_1 = easy_to_use_halls_without_connect(matrix.copy())
-    generate_svg_grid(matrix_1.tolist(), TEMPLATE_MAP, "boxes_prim.svg")
-    matrix_2 = easy_to_use_halls_connect(matrix.copy())
-    matrix_2 = pretty_vis(matrix_2)
-    generate_svg_grid(matrix_2.tolist(), TEMPLATE_MAP, "connected_prim.svg")
+    #matrix = matrix_repr(generate_maze(8,8),8,8)
+    #generate_svg_grid(matrix, TEMPLATE_MAP, "empty_maze.svg")
+    #matrix = prim_longer_halls(25,25, 0.8)
+    #generate_svg_grid(matrix.tolist(), TEMPLATE_MAP, "empty_prim.svg")
+    #matrix_1 = easy_to_use_halls_without_connect(matrix.copy())
+    #generate_svg_grid(matrix_1.tolist(), TEMPLATE_MAP, "boxes_prim.svg")
+    #matrix_2 = easy_to_use_halls_connect(matrix.copy())
+    #matrix_2 = pretty_vis(matrix_2)
+    #generate_svg_grid(matrix_2.tolist(), TEMPLATE_MAP, "connected_prim.svg")
     CELL_SIZE = 50
-    matrix = [
-        [1,1,1,1],
-        [1,8,0,1],
-        [1,2,0,1],
-        [1,4,0,1],
-        [1,1,1,1]]
-    generate_svg_grid(matrix, TEMPLATE_MAP, "wrong_box_pos.svg")
-    matrix = [
-        [1,1,1,1,1,1],
-        [1,0,0,0,0,1],
-        [1,0,0,0,0,1],
-        [1,0,3,1,4,1],
-        [1,0,0,0,0,1],
-        [1,1,1,1,1,1]
-    ]
-    generate_svg_grid(matrix, TEMPLATE_MAP, "temp1.svg")
-    matrix = [
-        [1,1,1,1,1,1],
-        [1,0,0,0,0,1],
-        [1,0,0,1,0,1],
-        [1,0,3,1,4,1],
-        [1,0,0,0,0,1],
-        [1,1,1,1,1,1]
-    ]
-    generate_svg_grid(matrix, TEMPLATE_MAP, "temp2.svg")
-    matrix = [
-        [1,1,1,1,1,1],
-        [1,0,0,0,0,1],
-        [1,0,0,1,0,1],
-        [1,0,3,1,4,1],
-        [1,0,0,1,0,1],
-        [1,0,0,0,0,1],
-        [1,1,1,1,1,1]
-    ]
-    generate_svg_grid(matrix, TEMPLATE_MAP, "temp3.svg")
-    matrix = [
-        [1,1,1,1,1,1],
-        [1,0,0,0,0,1],
-        [1,0,3,1,0,1],
-        [1,0,0,4,0,1],
-        [1,0,0,0,0,1],
-        [1,1,1,1,1,1]
-    ]
-    generate_svg_grid(matrix, TEMPLATE_MAP, "temp4.svg")
+    #matrix = [
+    #    [1,1,1,1],
+    #    [1,8,0,1],
+    #    [1,2,0,1],
+    #    [1,4,0,1],
+    #    [1,1,1,1]]
+    #generate_svg_grid(matrix, TEMPLATE_MAP, "wrong_box_pos.svg")
+    #matrix = [
+    #    [1,1,1,1,1,1],
+    #    [1,0,0,0,0,1],
+    #    [1,0,0,0,0,1],
+    #    [1,0,3,1,4,1],
+    #    [1,0,0,0,0,1],
+    #    [1,1,1,1,1,1]
+    #]
+    #generate_svg_grid(matrix, TEMPLATE_MAP, "temp1.svg")
+    #matrix = [
+    #    [1,1,1,1,1,1],
+    #    [1,0,0,0,0,1],
+    #    [1,0,0,1,0,1],
+    #    [1,0,3,1,4,1],
+    #    [1,0,0,0,0,1],
+    #    [1,1,1,1,1,1]
+    #]
+    #generate_svg_grid(matrix, TEMPLATE_MAP, "temp2.svg")
+    #matrix = [
+    #    [1,1,1,1,1,1],
+    #    [1,0,0,0,0,1],
+    #    [1,0,0,1,0,1],
+    #    [1,0,3,1,4,1],
+    #    [1,0,0,1,0,1],
+    #    [1,0,0,0,0,1],
+    #    [1,1,1,1,1,1]
+    #]
+    #generate_svg_grid(matrix, TEMPLATE_MAP, "temp3.svg")
+    #matrix = [
+    #    [1,1,1,1,1,1],
+    #    [1,0,0,0,0,1],
+    #    [1,0,3,1,0,1],
+    #    [1,0,0,4,0,1],
+    #    [1,0,0,0,0,1],
+    #    [1,1,1,1,1,1]
+    #]
+    #generate_svg_grid(matrix, TEMPLATE_MAP, "temp4.svg")
     matrix = [
         [1,1,1,1,1,1,1,1],
         [1,0,0,0,0,0,0,1],
         [1,0,0,0,0,0,0,1],
         [1,0,3,1,1,0,0,1],
-        [1,0,0,1,4,0,0,1],
+        [1,0,2,1,4,0,0,1],
         [1,0,0,0,0,0,0,1],
         [1,1,1,1,1,1,1,1]
     ]
     generate_svg_grid(matrix, TEMPLATE_MAP, "temp5.svg")
-    CELL_SIZE = 25
-    matrix = nxmfor_k_temps(20,20, templates, 7)
-    generate_svg_grid(matrix, TEMPLATE_MAP, "nxm_k.svg")
-    matrix = n_path(30)
-    generate_svg_grid(matrix, TEMPLATE_MAP, "n_path.svg")
-    matrix = simple_generate(20,20,7,20)
-    generate_svg_grid(matrix, TEMPLATE_MAP, "randomized.svg")
+    #CELL_SIZE = 25
+    #matrix = nxmfor_k_temps(20,20, templates, 7)
+    #generate_svg_grid(matrix, TEMPLATE_MAP, "nxm_k.svg")
+    #matrix = n_path(30)
+    #generate_svg_grid(matrix, TEMPLATE_MAP, "n_path.svg")
+    #matrix = simple_generate(20,20,7,20)
+    #generate_svg_grid(matrix, TEMPLATE_MAP, "randomized.svg")
