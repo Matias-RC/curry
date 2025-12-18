@@ -4,5 +4,6 @@ Continuous thought machines, Hierarchical reasoning model, Tiny recursive models
 
 
 
-alt 1: (Every one is ready) Well, as I was saying: These models excel at learning puzzles with very little data, there have been many success stories in sudoku, ARC-AGI, and many more, 
+alt 1: (Every one is ready) Well, as I was saying: These models excel at learning puzzles with very little data, there have been many success stories in sudoku, ARC-AGI, and many more. Usually, these work with outer refinement loops that let's them refine their solution multiple times until giving it away as final.
 
+These

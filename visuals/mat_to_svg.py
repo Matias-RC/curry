@@ -1,6 +1,6 @@
 import os
 from xml.etree import ElementTree as ET
-from level_generation import *
+from old_stuff.level_generation import *
 import numpy as np
 # === Configuration ===
 CELL_SIZE = 25  # Each cell is 100x100 pixels
