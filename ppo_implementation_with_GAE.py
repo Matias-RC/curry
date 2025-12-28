@@ -213,7 +213,6 @@ def run_episode(env: Environment, agent):
             total_steps += 1
             x = xp
 
-    # ---------- GAE computation (FIXED) ----------
     T = len(step_logs)
     gae = 0.0
 
@@ -221,14 +220,14 @@ def run_episode(env: Environment, agent):
         s, a, sp, r, done, logp, V_t = step_logs[t]
 
         if t == T - 1:
-            V_tp1 = 0.0  # terminal bootstrap
+            V_tp1 = 0.0  
         else:
             V_tp1 = step_logs[t + 1][6]
 
         delta = r + GAMMA * (1 - done) * V_tp1 - V_t
         gae = delta + GAMMA * LAMBDA * (1 - done) * gae
 
-        step_logs[t].append(gae)  # RAW GAE (NOT normalized)
+        step_logs[t].append(gae)
 
     return total_reward, total_entropy, total_steps, step_logs
 
