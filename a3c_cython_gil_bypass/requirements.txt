@@ -1,0 +1,6 @@
+cython
+numpy<2
+torch
+psutil
+pandas
+matplotlib
