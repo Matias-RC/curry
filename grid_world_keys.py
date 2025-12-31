@@ -78,24 +78,27 @@ lock_template = [
 
 
 class Key:
-    def __init__(self, pos, colour, terminal):
+    def __init__(self, pos, colour):
+        self.original_pos = pos
         self.pos = pos
         self.colour = colour
-        self.terminal = terminal
+    def reset(self):
+        self.pos = self.original_pos
 
 class Lock:
-    def __init__(self, pos, colour, my_key, next_key):
+    def __init__(self, pos, colour, my_key, next_key,  last_lock):
         self.pos = pos
         self.colour = colour
         self.my_key = my_key
         self.next_key = next_key
+        self.last_lock = last_lock
 
 class Environment:
     def __init__(self, spawn_size, key_maze_size, max_steps):
         self.spawn_x = spawn_size
         self.key_x, self.key_y = key_maze_size
 
-        self.size_x = self.spawn_x + self.key_x
+        self.size_x = self.spawn_x + self.key_x + 2 #+2 for padding between maze and spawn
         self.size_y = self.key_y
 
         self.curriculum_stage = 0
@@ -121,7 +124,33 @@ class Environment:
 
     def initialize_stage(self):
         if self.curriculum_stage == 0:
-            top
+            top_bottom = random.random()>self.spawn_y/(self.spawn_x*2)
+            bottom = True
+            lock_pos = [0,0]
+            if top_bottom:
+                lock_pos[1] = random.randint(2,self.spawn_x*2-1) #Avoid corners
+                if lock_pos[1] > self.spawn_x:
+                    bottom = False
+                    lock_pos[1] = lock_pos[1] - self.spawn_x - 1
+                lock_pos[1] = lock_pos[1] + self.key_x
+                lock_pos[0] = bottom*(self.size_y-1)
+            else:
+                lock_pos = [random.randint(1, self.spawn_y-2),self.size_x-1] #Also avoids corners
+
+            #Assign a random colour to the lock and it's assigned key
+            colour = random.choice(key_holes)
+            key_pos = (random.randint(1, self.size_y-2), random.randint(1, self.key_x-1))#keys should be pushable: padding
+            #Opening all the locks gives oficial termination reward
+            reward_pos = (random.randint(0, self.size_y-2), random.randint(1, self.key_x-1))
+            # ---> reward is not treated like key: It doesnt get put in a walled maze and works with apple mechanics
+
+            level_lock = Lock(tuple(lock_pos), colour, Key(key_pos, colour), reward_pos, True)
+
+
+            
+
+
+                
 
     def initialize_state(self):
         if self.curriculum_stage == 0:
