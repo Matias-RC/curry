@@ -158,13 +158,12 @@ class Environment:
 GAMMA = 0.9
 LAMBDA = 0 #TD(0)
 EPSILON = 0.2
-CE = 0.08
 VALUE_LOSS_COEF = 0.6
 LEVELS_PER_EPISODE = 5
-REPLAYS = 3
+REPLAYS = 1
 EPISODES_CURR_ZERO = 200
-EPISODES_CURR_ONE = 500
-EPISODES_CURR_TWO = 500
+EPISODES_CURR_ONE = 400
+EPISODES_CURR_TWO = 200
 ALPHA = 0.7
 
 from collections import defaultdict
@@ -191,7 +190,7 @@ def run_episode(env:Environment, agent):
             dist = torch.distributions.Categorical(logits=logits)
             action = dist.sample()
             logp_old = dist.log_prob(action).detach()
-            entropy = dist.entropy().mean()
+            entropy = dist.entropy()
 
             reward = env.update_state(action.item())
 
@@ -211,9 +210,10 @@ def run_episode(env:Environment, agent):
             x = xp
 
 
+
     return total_reward, total_entropy, total_steps, step_logs
 
-def offline_train(batch, agent, optimizer):
+def offline_train(batch, agent, optimizer, talkative=False, CE=0.8):
     # Extract components from batch
     S = torch.stack([s_t for s_t, a_t, s_tplus1, r_t, done, logp_old in batch])
     Sp = torch.stack([s_tplus1 for s_t, a_t, s_tplus1, r_t, done, logp_old in batch])
@@ -221,51 +221,51 @@ def offline_train(batch, agent, optimizer):
     R = torch.tensor([r_t for s_t, a_t, s_tplus1, r_t, done, logp_old in batch], device=S.device)
     Done = torch.tensor([done for s_t, a_t, s_tplus1, r_t, done, logp_old in batch], device=S.device, dtype=torch.float)
     Logp_old = torch.stack([logp_old for s_t, a_t, s_tplus1, r_t, done, logp_old in batch])
+    for  i in range(3):
+        # Forward pass on batched states
+        logits, values = agent(S)
+        values = values.squeeze()
 
-    # Forward pass on batched states
-    logits, values = agent(S)
-    values = values.squeeze()
+        dist = torch.distributions.Categorical(logits=logits)
+        logp_new = dist.log_prob(A)
+        entropies = dist.entropy()
 
-    dist = torch.distributions.Categorical(logits=logits)
-    logp_new = dist.log_prob(A)
-    entropies = dist.entropy()
+        ratios = torch.exp(logp_new - Logp_old)
 
-    ratios = torch.exp(logp_new - Logp_old)
+        # Compute next values
+        with torch.no_grad():
+            _, values_next = agent(Sp)
+            values_next = values_next.squeeze()
+        values_next = values_next * (1 - Done)
 
-    # Compute next values
-    with torch.no_grad():
-        _, values_next = agent(Sp)
-        values_next = values_next.squeeze()
-    values_next = values_next * (1 - Done)
+        # Compute advantages and value losses
+        advantages = R + GAMMA * values_next - values
+        value_losses = advantages.pow(2)
 
-    # Compute advantages and value losses
-    advantages = R + GAMMA * values_next - values
-    value_losses = advantages.pow(2)
+        # Normalize advantages
+        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+        adv_detached = advantages.detach()
+        # PPO clipped policy loss
+        unclipped = ratios * adv_detached
+        clipped = torch.clamp(ratios, 1 - EPSILON, 1 + EPSILON) * adv_detached
+        loss_policy = -torch.min(unclipped, clipped).mean()
 
-    # Normalize advantages
-    advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
-    adv_detached = advantages.detached()
-    # PPO clipped policy loss
-    unclipped = ratios * adv_detached
-    clipped = torch.clamp(ratios, 1 - EPSILON, 1 + EPSILON) * adv_detached
-    loss_policy = -torch.min(unclipped, clipped).mean()
+        # Value and entropy losses
+        loss_value = VALUE_LOSS_COEF * value_losses.mean()
+        loss_entropy = -CE * entropies.mean()
 
-    # Value and entropy losses
-    loss_value = VALUE_LOSS_COEF * value_losses.mean()
-    loss_entropy = -CE * entropies.mean()
+        loss = loss_policy + loss_value + loss_entropy
 
-    loss = loss_policy + loss_value + loss_entropy
-
-    optimizer.zero_grad()
-    loss.backward()
-    optimizer.step()
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
 
     return loss.item()
 
 
 def run_curriculum_stage(
     env, agent, optimizer,
-    num_episodes, stats
+    num_episodes, stats, CE
 ):
     for episode_idx in range(num_episodes):
 
@@ -275,19 +275,21 @@ def run_curriculum_stage(
             env.initialize_state()
             episode_states.append([env.state, env.agent_pos])
 
-        avg_reward = avg_entropy = 0.0
+        avg_reward = 0.0
+        avg_entropy = 0.0
 
         for _ in range(REPLAYS):
             batch = []
             for lvl in range(LEVELS_PER_EPISODE):
+                CE = CE*0.99
                 env.load(*episode_states[lvl])
 
                 r, e, steps, logs = run_episode(env, agent)
                 batch += logs
-                avg_reward += r / LEVELS_PER_EPISODE
-                avg_entropy += e / max(1, steps * LEVELS_PER_EPISODE)
+                avg_reward += r / (LEVELS_PER_EPISODE*REPLAYS)
+                avg_entropy += e / max(1, steps * LEVELS_PER_EPISODE*REPLAYS)
             batch = random.sample(batch, len(batch))
-            avg_loss = offline_train(batch, agent, optimizer)
+            avg_loss = offline_train(batch, agent, optimizer, CE)
 
 
         stats["reward"].append(avg_reward)
@@ -325,7 +327,7 @@ def plot_stats(stats):
     plt.show()
 
 
-def train():
+def train(CE):
     env = Environment(10, 100)
     agent = Agent(203, 40, 3, 4)
 
@@ -343,11 +345,10 @@ def train():
         env.curriculum_stage = stage
         run_curriculum_stage(
             env, agent, optimizer,
-            episodes, stats
+            episodes, stats, CE
         )
-
     return stats
 
 
 if __name__ == "__main__":
-    plot_stats(train())
+    plot_stats(train(0.1))

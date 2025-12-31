@@ -157,8 +157,6 @@ class Environment:
 
 GAMMA = 0.9
 LAMBDA = 0.8
-
-LAMBDA = 0 #TD(0)
 EPSILON = 0.2
 CE = 0.08
 VALUE_LOSS_COEF = 0.6
@@ -224,8 +222,8 @@ def run_episode(env: Environment, agent):
         else:
             V_tp1 = step_logs[t + 1][6]
 
-        delta = r + GAMMA * (1 - done) * V_tp1 - V_t
-        gae = delta + GAMMA * LAMBDA * (1 - done) * gae
+        delta = r + GAMMA*V_tp1 - V_t
+        gae = delta + GAMMA*LAMBDA* gae
 
         step_logs[t].append(gae)
 
@@ -303,8 +301,8 @@ def run_curriculum_stage(
 
                 r, e, steps, logs = run_episode(env, agent)
                 batch += logs
-                avg_reward += r / LEVELS_PER_EPISODE
-                avg_entropy += e / max(1, steps * LEVELS_PER_EPISODE)
+                avg_reward += r / (LEVELS_PER_EPISODE*REPLAYS)
+                avg_entropy += e / max(1, steps * LEVELS_PER_EPISODE*REPLAYS)
             batch = random.sample(batch, len(batch))
             avg_loss = offline_train(batch, agent, optimizer)
 
