@@ -277,7 +277,7 @@ def run_curriculum_stage(
 
         avg_reward = 0.0
         avg_entropy = 0.0
-
+        avg_loss = 0.0
         for _ in range(REPLAYS):
             batch = []
             for lvl in range(LEVELS_PER_EPISODE):
@@ -289,7 +289,8 @@ def run_curriculum_stage(
                 avg_reward += r / (LEVELS_PER_EPISODE*REPLAYS)
                 avg_entropy += e / max(1, steps * LEVELS_PER_EPISODE*REPLAYS)
             batch = random.sample(batch, len(batch))
-            avg_loss = offline_train(batch, agent, optimizer, CE)
+            single_loss = offline_train(batch, agent, optimizer, CE)
+            avg_loss += single_loss / REPLAYS
 
 
         stats["reward"].append(avg_reward)
