@@ -1,3 +1,4 @@
+import copy
 import torch
 import random
 import torch.nn as nn
@@ -5,6 +6,7 @@ import torch.nn.functional as F
 from typing  import List, Set, Tuple
 from PIL import Image, ImageDraw, ImageFont
 import os
+
 
 key_holes = [
     (0,1,0),
@@ -110,6 +112,7 @@ class Environment:
         self.templates = templates
         self.walls = List[Set]
         self.lock_entries = List[Lock]
+        self.placed_locks = set()
 
         self.current_key = None
         self.player_pos = None
@@ -119,28 +122,24 @@ class Environment:
         self.max_steps = max_steps
 
         self.finished = False
-
     def initialize_state(self):
         if self.curriculum_stage == 0:
             top_bottom = random.random()>self.size_y/(self.spawn_x*2)
             bottom = True
             lock_pos = [0,0]
             if top_bottom:
-                lock_pos[1] = random.randint(2,self.spawn_x*2-1) #Avoid corners
+                lock_pos[1] = random.randint(2,self.spawn_x*2-1)
                 if lock_pos[1] > self.spawn_x:
                     bottom = False
                     lock_pos[1] = lock_pos[1] - self.spawn_x - 1
                 lock_pos[1] = lock_pos[1] + self.key_x
                 lock_pos[0] = bottom*(self.size_y-1)
             else:
-                lock_pos = [random.randint(1, self.size_y-2),self.size_x-1] #Also avoids corners
+                lock_pos = [random.randint(1, self.size_y-2),self.size_x-1]
 
-            #Assign a random colour to the lock and it's assigned key
             colour = random.choice(key_holes)
-            key_pos = (random.randint(1, self.size_y-2), random.randint(1, self.key_x-1))#keys should be pushable: padding
-            #Opening all the locks gives oficial termination reward
+            key_pos = (random.randint(1, self.size_y-2), random.randint(1, self.key_x-1))
             reward_pos = (random.randint(0, self.size_y-2), random.randint(1, self.key_x-1))
-            # ---> reward is not treated like key: It doesnt get put in a walled maze and works with apple mechanics
 
             level_lock = Lock(tuple(lock_pos), colour, Key(key_pos, colour, (128,128,128)), Key(reward_pos, (128/255,128/255,0),(128/255,128/255,0)), True)
 
@@ -161,47 +160,125 @@ class Environment:
                         track_x = False
                     if (new_y == self.size_y-1):
                         track_y = False
-                    #rot dir by 90 counter-clockwise
                     direction = (direction[1], -direction[0])
                     new_y = pos[0]+direction[0]
                     new_x =pos[1]+direction[1]
-
                 pos = (new_y,new_x)
-
-                
-
 
             for item in self.lock_entries:
                 if item.pos in self.walls[0]:
                     self.walls[0].remove(item.pos)
             self.walls.append(self.walls[0].copy())
 
+        # snapshot initial level/state for reset
+        self._initial_level = copy.deepcopy(self.export_level())
+        self._initial_state = copy.deepcopy(self.export_state())
+
     def manhattan_distance(self, pos_1, pos_2):
         dy = abs(pos_1[0]-pos_2[0])
         dx = abs(pos_1[1]-pos_2[1])
         return dy + dx
     
-    def update(self, action):
-        dy, dx = self.action_map[action]
+    def update(self, action: int):
         self.left_steps -= 1
         if self.left_steps < 0:
             self.finished = True
-            return 0
-        
-        new_pos = (self.player_pos[0]+dy, self.player_pos[1]+dx)
-        #if new pos in current walls: nope
-        #if new pos == key pos:
-        #   if new_key is last key: +15 reward finish game
-        #   if new_key in current walls: nope
-        #   if new_key in lock:
-        #       iff  colours match +10 reward, update walls, update key
-        #       else -10 reward and re-start level
-        #if new pos in lock entries: accept
-        #if new pos out of bounds: reject 
+            return 0.0
 
+        dy, dx = self.action_map[action]
+        new_pos = (self.player_pos[0] + dy, self.player_pos[1] + dx)
 
-    def suplementary_reward(self, last_state):
-        pass
+        def in_bounds(pos):
+            return 0 <= pos[0] < self.size_y and 0 <= pos[1] < self.size_x
+
+        try:
+            walls_current = self.walls[self.current_key]
+        except Exception:
+            walls_current = set()
+
+        if getattr(self, "lock_entries", None) and self.current_key == len(self.lock_entries):
+            final_key = self.lock_entries[-1].next_key
+            if new_pos == final_key.pos:
+                self.finished = True
+                return 15.0
+
+        if (not in_bounds(new_pos)) or (new_pos in walls_current) or (new_pos in self.placed_locks):
+            return -0.5
+
+        this_key = None
+        if getattr(self, "lock_entries", None) and self.current_key < len(self.lock_entries):
+            this_key = self.lock_entries[self.current_key].my_key
+
+        if this_key is not None and new_pos == this_key.pos:
+            target_pos = (this_key.pos[0] + dy, this_key.pos[1] + dx)
+
+            if (not in_bounds(target_pos)) or (target_pos in walls_current) or (target_pos in self.placed_locks):
+                return -0.5
+
+            lock_hit = None
+            for idx, lock in enumerate(self.lock_entries):
+                if lock.pos == target_pos:
+                    lock_hit = (idx, lock)
+                    break
+
+            if lock_hit is not None:
+                idx, lock = lock_hit
+                if lock.colour == this_key.colour:
+                    this_key.pos = lock.pos
+                    self.placed_locks.add(lock.pos)
+                    if getattr(lock, "next_key", None) is not None:
+                        lock.next_key.pos = lock.next_key.original_pos
+                    self.current_key += 1
+                    self.player_pos = new_pos
+                    return 10.0
+                else:
+                    self.finished = True
+                    return -10.0
+
+            this_key.pos = target_pos
+            self.player_pos = new_pos
+            return -0.5
+
+        self.player_pos = new_pos
+        return -0.5
+    
+    def suplementary_reward(self, state1, state2):
+        if len(self.lock_entries) != 1:
+            return 0.0
+
+        lock = self.lock_entries[0]
+
+        if state2["current_key"] >= len(self.lock_entries):
+            return 0.0
+
+        p1 = tuple(state1["player_pos"])
+        p2 = tuple(state2["player_pos"])
+
+        k1 = tuple(state1["locks_pos"][0]["my_key_pos"])
+        k2 = tuple(state2["locks_pos"][0]["my_key_pos"])
+
+        lock_pos = lock.pos
+
+        r = 0.0
+
+        d_p_k_1 = self.manhattan_distance(p1, k1)
+        d_p_k_2 = self.manhattan_distance(p2, k2)
+
+        if d_p_k_2 < d_p_k_1:
+            r += 1.0
+        elif d_p_k_2 > d_p_k_1:
+            r -= 2.0
+
+        d_k_l_1 = self.manhattan_distance(k1, lock_pos)
+        d_k_l_2 = self.manhattan_distance(k2, lock_pos)
+
+        if d_k_l_2 < d_k_l_1:
+            r += 1.0
+        elif d_k_l_2 > d_k_l_1:
+            r -= 2.0
+
+        return r
+
 
     def render(self):
         board = torch.ones((self.size_y,self.size_x,3))
@@ -287,14 +364,163 @@ class Environment:
         img.save(filename)
         return filename
     
-    def load(self):
-        pass
+    def export_level(self):
+        walls_serial = []
+        for wset in getattr(self, "walls", []):
+            walls_serial.append([ [int(p[0]), int(p[1])] for p in wset ])
+        locks_serial = []
+        for lock in getattr(self, "lock_entries", []):
+            lk = {
+                "pos": [int(lock.pos[0]), int(lock.pos[1])],
+                "colour": [float(c) for c in lock.colour],
+                "last_lock": bool(lock.last_lock),
+                "my_key": {
+                    "original_pos": [int(lock.my_key.original_pos[0]), int(lock.my_key.original_pos[1])],
+                    "colour": [float(c) for c in lock.my_key.colour],
+                    "percived_colour": [int(lock.my_key.percived_colour[0]) if isinstance(lock.my_key.percived_colour[0], int) else float(lock.my_key.percived_colour[0]),
+                                        int(lock.my_key.percived_colour[1]) if isinstance(lock.my_key.percived_colour[1], int) else float(lock.my_key.percived_colour[1]),
+                                        int(lock.my_key.percived_colour[2]) if isinstance(lock.my_key.percived_colour[2], int) else float(lock.my_key.percived_colour[2])]
+                },
+                "next_key": {
+                    "original_pos": [int(lock.next_key.original_pos[0]), int(lock.next_key.original_pos[1])],
+                    "colour": [float(c) for c in lock.next_key.colour],
+                    "percived_colour": [int(lock.next_key.percived_colour[0]) if isinstance(lock.next_key.percived_colour[0], int) else float(lock.next_key.percived_colour[0]),
+                                        int(lock.next_key.percived_colour[1]) if isinstance(lock.next_key.percived_colour[1], int) else float(lock.next_key.percived_colour[1]),
+                                        int(lock.next_key.percived_colour[2]) if isinstance(lock.next_key.percived_colour[2], int) else float(lock.next_key.percived_colour[2])]
+                }
+            }
+            locks_serial.append(lk)
+        level = {
+            "spawn_x": int(self.spawn_x),
+            "key_x": int(self.key_x),
+            "key_y": int(self.key_y),
+            "size_x": int(self.size_x),
+            "size_y": int(self.size_y),
+            "walls": walls_serial,
+            "lock_entries": locks_serial
+        }
+        return level
+    def export_state(self):
+        locks_pos = {}
+        for idx, lock in enumerate(getattr(self, "lock_entries", [])):
+            locks_pos[idx] = {
+                "my_key_pos": [int(lock.my_key.pos[0]), int(lock.my_key.pos[1])],
+                "next_key_pos": [int(lock.next_key.pos[0]), int(lock.next_key.pos[1])]
+            }
+        state = {
+            "player_pos": [int(self.player_pos[0]), int(self.player_pos[1])],
+            "current_key": int(self.current_key),
+            "left_steps": int(self.left_steps),
+            "placed_locks": [[int(p[0]), int(p[1])] for p in getattr(self, "placed_locks", set())],
+            "locks_pos": locks_pos,
+            "finished": bool(self.finished)
+        }
+        return state
+    def load_level(self, level_obj):
+        self.spawn_x = int(level_obj.get("spawn_x", self.spawn_x))
+        self.key_x = int(level_obj.get("key_x", self.key_x))
+        self.key_y = int(level_obj.get("key_y", self.key_y))
+        self.size_x = int(level_obj.get("size_x", self.size_x))
+        self.size_y = int(level_obj.get("size_y", self.size_y))
+        walls_raw = level_obj.get("walls", [])
+        self.walls = []
+        for w in walls_raw:
+            self.walls.append(set([ (int(p[0]), int(p[1])) for p in w ]))
+        if not self.walls:
+            self.walls = [set()]
+        locks_raw = level_obj.get("lock_entries", [])
+        new_locks = []
+        for lr in locks_raw:
+            pos = tuple(int(x) for x in lr["pos"])
+            colour = tuple(float(x) for x in lr["colour"])
+            myk = lr["my_key"]
+            nk = lr["next_key"]
+            my_key_obj = Key(tuple(int(x) for x in myk["original_pos"]), tuple(float(x) for x in myk["colour"]), tuple(myk["percived_colour"]))
+            next_key_obj = Key(tuple(int(x) for x in nk["original_pos"]), tuple(float(x) for x in nk["colour"]), tuple(nk["percived_colour"]))
+            lock_obj = Lock(pos, colour, my_key_obj, next_key_obj, bool(lr.get("last_lock", False)))
+            new_locks.append(lock_obj)
+        self.lock_entries = new_locks
+        self.current_key = 0
+        self.placed_locks = set()
+        self.finished = False
 
+    def load_state(self, state_obj):
+        self.player_pos = tuple(int(x) for x in state_obj["player_pos"])
+        self.current_key = int(state_obj["current_key"])
+        self.left_steps = int(state_obj["left_steps"])
+        self.placed_locks = set([ (int(p[0]), int(p[1])) for p in state_obj.get("placed_locks", []) ])
+        for idx, posdict in state_obj.get("locks_pos", {}).items():
+            idxi = int(idx)
+            if idxi < len(self.lock_entries):
+                self.lock_entries[idxi].my_key.pos = tuple(int(x) for x in posdict["my_key_pos"])
+                self.lock_entries[idxi].next_key.pos = tuple(int(x) for x in posdict["next_key_pos"])
+        self.finished = bool(state_obj.get("finished", False))
+
+    def reset(self):
+        if hasattr(self, "_initial_level") and hasattr(self, "_initial_state"):
+            self.load_level(copy.deepcopy(self._initial_level))
+            self.load_state(copy.deepcopy(self._initial_state))
+            self.left_steps = int(self.max_steps)
+            self.finished = False
+        else:
+            raise RuntimeError("No initial snapshot available to reset to.")
+        
 
 if __name__ == "__main__":
     env = Environment(6, (12,12), 100)
     env.initialize_state()
-    for i  in range(3):
+
+    saved_level = None
+    saved_state = None
+
+    i = 0
+    while True:
         env.render_for_human(filename=f"images/step{i}.png")
-        a = int(input())
-        env.update(a)
+        print("w=0 a=1 d=2 s=3 | l=export level | k=export state | L=load level | K=load state | r=reset | q=quit")
+        cmd = input(">> ").strip()
+
+        if cmd == "q":
+            break
+
+        if cmd in ["0","1","2","3"]:
+            if not env.finished:
+                r = env.update(int(cmd))
+                print("reward:", r, "finished:", env.finished)
+            else:
+                print("episode finished; press r to reset")
+            i += 1
+            continue
+
+        if cmd == "l":
+            saved_level = env.export_level()
+            print("level exported")
+            continue
+
+        if cmd == "k":
+            saved_state = env.export_state()
+            print("state exported")
+            continue
+
+        if cmd == "L":
+            if saved_level is not None:
+                env.load_level(saved_level)
+                print("level loaded")
+            else:
+                print("no saved level")
+            continue
+
+        if cmd == "K":
+            if saved_state is not None:
+                env.load_state(saved_state)
+                print("state loaded")
+            else:
+                print("no saved state")
+            continue
+
+        if cmd == "r":
+            env.reset()
+            i = 0
+            print("environment reset")
+            continue
+
+        print("unknown command")
