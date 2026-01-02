@@ -384,6 +384,7 @@ class Environment:
                     self.finished = True
                     return -0.5
             this_key.pos = target_pos
+
             self.player_pos = new_pos
             return -0.5
         self.player_pos = new_pos
@@ -395,7 +396,7 @@ class Environment:
         lock = self.lock_entries[0]
         # 
         # Current key doesn't exist in the exported state dict
-        #
+        #   |- Change either this function or export
         if state2["current_key"] >= len(self.lock_entries):
             return 0.0
         p1 = tuple(state1["player_pos"])
@@ -409,13 +410,16 @@ class Environment:
         if d_p_k_2 < d_p_k_1:
             r += 1.0
         elif d_p_k_2 > d_p_k_1:
-            r -= 2.0
+            if d_p_k_2 >3:
+                r = 0.5
+            else:
+                r -= 2.0 + d_p_k_2
         d_k_l_1 = self.manhattan_distance(k1, lock_pos)
         d_k_l_2 = self.manhattan_distance(k2, lock_pos)
         if d_k_l_2 < d_k_l_1:
-            r += 1.0
+            r += 5.0
         elif d_k_l_2 > d_k_l_1:
-            r -= 2.0
+            r -= 10.0
         return r
 
     def render(self):
@@ -599,6 +603,7 @@ class Environment:
             }
         state = {
             "player_pos": [int(self.player_pos[0]), int(self.player_pos[1])],
+            # WTF current key is being saved
             "current_key": int(self.current_key),
             "left_steps": int(self.left_steps),
             "placed_locks": [[int(p[0]), int(p[1])] for p in getattr(self, "placed_locks", set())],
@@ -669,14 +674,15 @@ class Environment:
         return True
 
 if __name__ == "__main__":
-    env = Environment(6, (12,12), 100)
+    env = Environment(3, (6,6), 100)
     env.initialize_state()
     saved_level = None
     saved_state = None
+    saved_pos = None
     i = 0
     while True:
         env.render_for_human(filename=f"images/step{i}.png")
-        print("w=0 a=1 d=2 s=3 | l=export level | k=export state | L=load level | K=load state | r=reset | q=quit")
+        print("w=0 a=1 d=2 s=3 | l=export level | k=export state | L=load level | K=load state | r=reset | q=quit | change | lock_pos_save/load")
         cmd = input(">> ").strip()
         if cmd == "q":
             break
@@ -684,7 +690,7 @@ if __name__ == "__main__":
             if not env.finished:
                 a = env.export_state()
                 r = env.update(int(cmd))
-                b = env.export_level()
+                b = env.export_state()
                 r += env.suplementary_reward(a, b)
                 print("reward:", r, "finished:", env.finished)
             else:
@@ -715,7 +721,22 @@ if __name__ == "__main__":
             continue
         if cmd == "r":
             env.reset()
-            i = 0
             print("environment reset")
+            i += 1
             continue
+        if cmd == "change":
+            env.initialize_state()
+            i += 1
+            continue
+        if cmd == "lock_pos_save":
+            print(f"Current lock pos {env.lock_entries[0].pos}")
+            saved_pos = env.lock_entries[0].pos
+            continue
+        if cmd == "lock_pos_load":
+            env.walls[0].add(env.lock_entries[0].pos)
+            env.walls[0].remove(saved_pos)
+            env.lock_entries[0].pos = saved_pos
+            i += 1
+            continue
+
         print("unknown command")

@@ -5,8 +5,14 @@ import numpy as np
 import torch.nn as nn
 import matplotlib.pyplot as plt
 import torch.nn.functional as F
-
-
+from curriculum_utils import apply_midway_curriculum
+from grid_world_keys import Environment
+from collections import defaultdict
+from typing import List
+import os
+import shutil
+import imageio.v2 as imageio
+"""
 class BackBone(nn.Module):
     def __init__(self, mlp_input_size, mlp_hidden_dims, num_hidden_layers, conv_specs):
         super().__init__()
@@ -33,7 +39,30 @@ class BackBone(nn.Module):
         x = x.mean(dim=(2, 3))
         for i in self.mlp_layers:
             x = F.relu(i(x))
+        return x"""
+
+class BackBone(nn.Module):
+    def __init__(self, input_size, hidden_dims, num_hidden_layers):
+        super().__init__()
+        self.in_size = input_size
+        self.hidden = hidden_dims
+
+        layers = []
+        for i in range(num_hidden_layers):
+            if i == 0:
+                layers.append(nn.Linear(self.in_size, self.hidden))
+            else:
+                layers.append(nn.Linear(self.hidden, self.hidden))
+        
+        self.layers = nn.ModuleList(layers)
+    
+    def forward(self, x):
+        x = torch.flatten(x, start_dim=1)
+        for i in self.layers:
+            x = F.relu(i(x))
         return x
+
+
 
 class Head(nn.Module):
     def __init__(self, input_size, output_size):
@@ -43,7 +72,7 @@ class Head(nn.Module):
     def forward(self, x):
         return self.out_layer(x)
 
-class Agent(nn.Module):
+"""class Agent(nn.Module):
     def __init__(self, mlp_input_size, mlp_hidden_dims, mlp_num_hidden_layers, mlp_output_size, conv_specs):
         super().__init__()
         self.BackboneNN = BackBone(mlp_input_size, mlp_hidden_dims, mlp_num_hidden_layers, conv_specs)
@@ -54,19 +83,31 @@ class Agent(nn.Module):
         x = self.BackboneNN(board_state)
         p = self.PolicyHeadNN(x)
         v = self.ValueHeadNN(x)
-        return p,v
-    
-from grid_world_keys import Environment
+        return p,v"""
+class Agent(nn.Module):
+    def __init__(self, input_size, hidden_dims, num_hidden_layers, output_size):
+        super().__init__()
+        self.BackboneNN = BackBone(input_size, hidden_dims, num_hidden_layers)
+        self.PolicyHeadNN = Head(hidden_dims, output_size)
+        self.ValueHeadNN = Head(hidden_dims, 1)
 
-GAMMA = 0.99
-LAMBDA = 0.95
+    def forward(self, board_state):
+        x = self.BackboneNN(board_state)
+        p = self.PolicyHeadNN(x)
+        v = self.ValueHeadNN(x)
+        return p, v
+
+
+
+GAMMA = 0.97
+LAMBDA = 0.8
 EPSILON = 0.2
-CE = 0.1
-CE_ANEAL = 0.99 
+CE = 0.08
+CE_ANEAL = 1
 CE_EPISODES_PER_ANEAL = 5
 
-VALUE_LOSS_COEF = 0.6
-STEPS_PER_EPISODE = 2000
+VALUE_LOSS_COEF = 0.7
+STEPS_PER_EPISODE = 400
 
 EPISODES_CURR_ZERO = 700
 EPISODES_CURR_ONE = 700
@@ -74,10 +115,8 @@ EPISODES_CURR_TWO = 2000
 ALPHA = 0.7
 
 SUPP_REWARD_COEF = 2
-SUPP_DEPLEATION_RATE = 2/(EPISODES_CURR_ZERO+EPISODES_CURR_ONE)
+SUPP_DEPLEATION_RATE = 0
 
-from collections import defaultdict
-from typing import List
 
 stats = defaultdict(list)
 
@@ -141,62 +180,112 @@ def run_episode(env: Environment, agent):
 
     return total_reward, total_actual_reward, total_entropy, total_steps, step_logs
 
+
+
+def stream_episode(
+    env,
+    agent,
+    gif_path="episode.gif",
+    total_duration_sec=30,
+    frame_dir="images"
+):
+    os.makedirs(frame_dir, exist_ok=True)
+
+    fps = 500 / total_duration_sec
+    frame_duration = 1.0 / fps
+
+    frames = []
+    total_steps = 0
+
+    x = env.render()
+
+    while not env.finished:
+        with torch.no_grad():
+            logits, value = agent(x.unsqueeze(0))
+            dist = torch.distributions.Categorical(logits=logits)
+            action = dist.sample()
+
+        frame_path = os.path.join(frame_dir, f"step_{total_steps:04d}.png")
+        env.render_for_human(filename=frame_path)
+
+        # Load immediately into memory
+        frames.append(imageio.imread(frame_path))
+
+        _ = env.update(action.item())
+        x = env.render()
+        total_steps += 1
+    print(f"length: {total_steps}")
+
+    # Write GIF
+    imageio.mimsave(
+        gif_path,
+        frames,
+        duration=frame_duration,
+        loop=0
+    )
+
+    # Cleanup images
+    shutil.rmtree(frame_dir)
+
 def offline_train(batch, agent, optimizer):
-    avg_loss = 0
     device = next(agent.parameters()).device
+
     # Unpack batch
     S = torch.stack([s for s, a, sp, r, d, lp, v, adv in batch]).to(device)
     A = torch.tensor([a for s, a, sp, r, d, lp, v, adv in batch], device=device)
     Done = torch.tensor([d for s, a, sp, r, d, lp, v, adv in batch],
                         device=device, dtype=torch.float)
+
     Logp_old = torch.stack([lp for s, a, sp, r, d, lp, v, adv in batch]).to(device)
     V_old = torch.stack([v for s, a, sp, r, d, lp, v, adv in batch]).squeeze().to(device)
+
     # RAW GAE (for value learning)
     GAE_raw = torch.tensor([adv for s, a, sp, r, d, lp, v, adv in batch],
-                        device=device, dtype=torch.float)
+                           device=device, dtype=torch.float)
+
     # Normalize ONLY for policy
     Adv = (GAE_raw - GAE_raw.mean()) / (GAE_raw.std() + 1e-8)
     Adv_detached = Adv.detach()
 
-    for _ in range(3):
-        # Forward
-        logits, V_new = agent(S)
-        V_new = V_new.squeeze()
+    # Forward
+    logits, V_new = agent(S)
+    V_new = V_new.squeeze()
 
-        dist = torch.distributions.Categorical(logits=logits)
-        logp_new = dist.log_prob(A)
-        entropy = dist.entropy()
+    dist = torch.distributions.Categorical(logits=logits)
+    logp_new = dist.log_prob(A)
+    entropy = dist.entropy()
 
-        ratios = torch.exp(logp_new - Logp_old)
+    ratios = torch.exp(logp_new - Logp_old)
 
-        # PPO policy loss
-        unclipped = ratios * Adv_detached
-        clipped = torch.clamp(ratios, 1 - EPSILON, 1 + EPSILON) * Adv_detached
-        loss_policy = -torch.min(unclipped, clipped).mean()
+    # PPO policy loss
+    unclipped = ratios * Adv_detached
+    clipped = torch.clamp(ratios, 1 - EPSILON, 1 + EPSILON) * Adv_detached
+    loss_policy = -torch.min(unclipped, clipped).mean()
 
-        # VALUE TARGET (CRITICAL FIX)
-        V_target = V_old + GAE_raw
-        loss_value = VALUE_LOSS_COEF * F.mse_loss(V_new, V_target.detach())
+    # VALUE TARGET (CRITICAL FIX)
+    V_target = V_old + GAE_raw
+    loss_value = VALUE_LOSS_COEF * F.mse_loss(V_new, V_target.detach())
 
-        # Entropy bonus
-        loss_entropy = -CE * entropy.mean()
+    # Entropy bonus
+    loss_entropy = -CE * entropy.mean()
 
-        loss = loss_policy + loss_value + loss_entropy
+    loss = loss_policy + loss_value + loss_entropy
 
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-        avg_loss += loss.item()
+    optimizer.zero_grad()
+    loss.backward()
+    optimizer.step()
 
-    return avg_loss/3
+    return loss.item()
+
 
 
 
 def run_curriculum_stage(
     env:Environment, agent, optimizer,
-    num_episodes, stats
+    num_episodes, stats, first
 ):
     global SUPP_REWARD_COEF, CE
+
     for episode_idx in range(num_episodes):
         avg_reward = 0.0
         avg_reward_real = 0.0
@@ -205,6 +294,8 @@ def run_curriculum_stage(
         batch = []
         while len(batch) < STEPS_PER_EPISODE:
             env.initialize_state()
+            if first:
+                apply_midway_curriculum(env, episode_idx)
             #total_reward, total_actual_reward, total_entropy, total_steps, step_logs
             r, r_real, e, steps, logs = run_episode(env, agent)
             if len(batch)+steps > STEPS_PER_EPISODE:
@@ -228,6 +319,11 @@ def run_curriculum_stage(
         )
         if episode_idx%CE_EPISODES_PER_ANEAL == 0:
             CE = CE*CE_ANEAL
+        if episode_idx%20 == 0:
+            env.initialize_state()
+            if first:
+                apply_midway_curriculum(env, episode_idx)
+            stream_episode(env, agent, f"gifs/episode{episode_idx}.gif")
         if SUPP_REWARD_COEF != 0:
             SUPP_REWARD_COEF -= SUPP_DEPLEATION_RATE
             if SUPP_REWARD_COEF < 0:
@@ -263,13 +359,13 @@ def plot_stats(stats):
 conv_specs = [
     (3, 16, 3, 1, 1),   # keep (12,20) -> (12,20)
     (16, 32, 3, 2, 1),  # stride=2 -> halves: (6,10)
-    (32, 64, 3, 2, 1)   # stride=2 -> (3,5)
+    (32, 128, 3, 2, 1)   # stride=2 -> (3,5)
 ]
 input_shape = (3, 12, 20)
 
 def train():
-    env = Environment(6, (12,12), 500)
-    agent = Agent(64,64,3,4, conv_specs)
+    env = Environment(3, (6,6), 80)
+    agent = Agent(198, 64, 3, 4)
 
     optimizer = torch.optim.Adam(agent.parameters(), lr=1e-3)
 
@@ -280,13 +376,16 @@ def train():
         ((1,1), EPISODES_CURR_ONE),
         ((2,1), EPISODES_CURR_TWO),
     ]
+    first = True
 
     for stage, episodes in curriculum:
         env.curriculum_stage = stage
         run_curriculum_stage(
             env, agent, optimizer,
-            episodes, stats
+            episodes, stats, first
         )
+        if first:
+            first = not first
 
     return stats
 
