@@ -905,9 +905,9 @@ def parse_args():
                         help='Random seed for reproducibility (default: 42)')
     
     # Select Model Type
-    parser.add_argument('--use_conv', action='store_true', default=DEFAUL_ARGS["USE_CONV"],
+    parser.add_argument('--use_conv', type=int, default=int(DEFAUL_ARGS["USE_CONV"]),
                         help='Use convolutional neural network for the agent (default: True)')
-    parser.add_argument('--use_mlp', action='store_true', default=DEFAUL_ARGS["USE_MLP"],
+    parser.add_argument('--use_mlp', type=int, default=int(DEFAUL_ARGS["USE_MLP"]),
                         help='Use MLP neural network for the agent (default: False)')
     
     # Conv Network hyperparameters
