@@ -77,9 +77,6 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # -------------------------- Utility functions --------------------------
 
-
-
-
 def clamp_pos(pos, size):
     y, x = pos
     y = max(0, min(size - 1, y))
@@ -272,8 +269,9 @@ class PushCurriculumEnv:
         self.left_steps = self.max_steps
         self.finished = False   
         return self.render_state()
+    
     def share(self):
-        return (self.agent_pos,self.box_pos,self.goal_pos,self.push_pos)
+        return (self.agent_pos, self.box_pos, self.goal_pos, self.push_pos)
 
     def render_state(self):
         """
@@ -600,9 +598,11 @@ def evaluate_policy(env: PushCurriculumEnv, agent: ConvActorCritic, episodes: in
     successes = 0
     total_entropy = 0.0
     failures = []
+    list_last_actions = []
     for _ in range(episodes):
         obs = env.reset(use_replay=False)
         tup =  env.share()
+        last_actions = []
         while not env.finished:
             with torch.no_grad():
                 logits, _ = agent(obs.to(device))
@@ -610,15 +610,22 @@ def evaluate_policy(env: PushCurriculumEnv, agent: ConvActorCritic, episodes: in
                 dist = torch.distributions.Categorical(logits=logits)
                 action = dist.probs.argmax(dim=-1)
                 total_entropy += dist.entropy().item()
-            _, r, done, _ = env.step(int(action.item()))
+                last_actions.append(action.item())
+
+            obs, r, done, _ = env.step(int(action.item()))
+
         # success if box on goal
         if env.box_pos == env.goal_pos:
             successes += 1
+
         elif epoch%200 == 0:
+            list_last_actions.append(last_actions)
             failures.append(tup)
-    random.shuffle(failures)
+
     for idx, item in enumerate(failures[:4]):
-        stream_episode(env, agent, f"fails/fail_{epoch}_{idx}.gif", total_duration_sec=30, load=True, info=item)
+        expected_actions = list_last_actions[idx]
+        # print("evaluate_policy last actions:", expected_actions)
+        stream_episode(env, agent, f"fails/fail_{epoch}_{idx}.gif", expected_actions=expected_actions, total_duration_sec=20, load=True, info=item, device=device)
     avg_entropy = total_entropy / max(1, episodes)
     return successes / max(1, episodes), avg_entropy
 
@@ -659,14 +666,17 @@ def save_stats_csv(stats, stage: int, out_dir="runs/logs"):
         writer = csv.writer(f)
         writer.writerow(keys)
         writer.writerows(rows)
+
 def stream_episode(
-    env:PushCurriculumEnv,
+    env: PushCurriculumEnv,
     agent,
     gif_path="episode.gif",
+    expected_actions=None,
     total_duration_sec=30,
     frame_dir="images",
     load=False,
     info=None,
+    device="cpu",
 ):
     os.makedirs(frame_dir, exist_ok=True)
 
@@ -680,12 +690,15 @@ def stream_episode(
     else:
         x = env.reset(False)
 
+    actions = []
     while not env.finished:
         with torch.no_grad():
-            logits, value = agent(x)
+            logits, _ = agent(x.to(device))
+            logits = logits.squeeze(0)
             dist = torch.distributions.Categorical(logits=logits)
-            print(dist.probs)
+            #print(dist.probs)
             action = dist.probs.argmax(dim=-1)
+            actions.append(action.item())
 
         frame_path = os.path.join(frame_dir, f"step_{total_steps:04d}.png")
         env.render_for_human(filename=frame_path)
@@ -696,7 +709,10 @@ def stream_episode(
         x, _, _, _ = env.step(action.item())
         total_steps += 1
     env.render_for_human(filename=frame_path)
+    if expected_actions is not None:
+        assert actions == expected_actions
 
+    # print("stream_episode actions:", actions)
     # Load immediately into memory
     frames.append(imageio.imread(frame_path))
     print(f"length: {total_steps}")
@@ -719,7 +735,7 @@ def training_demo(num_epochs: int = 20,
     """
     Tiny training demo using the environment + offline PPO. This is intentionally small for a quick demo.
     """
-    env = PushCurriculumEnv()
+    env = PushCurriculumEnv(seed=42)
     agent = ConvActorCritic().to(device)
     optimizer = torch.optim.Adam(agent.parameters(), lr=CONFIG["LEARNING_RATE"])
 
