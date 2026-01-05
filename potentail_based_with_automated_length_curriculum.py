@@ -63,14 +63,12 @@ class PushCurriculumEnv:
     State is fully observable by default: (agent_pos, box_pos, goal_pos)
     """
 
-    def __init__(self, grid_size: int = CONFIG["GRID_SIZE"], seed: Optional[int] = None,
-                 config: Optional[Dict] = None):
-        if config is None:
-            config = CONFIG
+    def __init__(self, config: Optional[Dict] = None):
+        assert config is not None, "Config dictionary must be provided"
         self.config = config
-        self.grid_size = grid_size
-        self.rng = random.Random(seed)
-        self.np_rng = np.random.RandomState(seed if seed is not None else int(time.time()))
+        self.grid_size = self.config.get("GRID_SIZE", 6)
+        self.rng = random.Random()
+        self.np_rng = np.random.default_rng() # no longer worry about this seed because we define it externally
         self.action_map = [(-1, 0), (1, 0), (0, -1), (0, 1)]
 
         # State
@@ -436,14 +434,18 @@ class ConvActorCritic(nn.Module):
         super().__init__()
 
         grid_size=config.get("grid_size", 6)
-        hidden=config.get("hidden", 64)
+        hidden=config.get("conv_hidden", 64)
 
-        self.conv = nn.Sequential(
-            nn.Conv2d(4, 32, kernel_size=3, padding=1),
-            nn.ReLU(),
-            nn.Conv2d(32, 32, kernel_size=3, padding=1),
-            nn.ReLU(),
-        )
+        conv_layers = []
+        for i in config.get("conv_def", [(32,3,1),(32,3,1)]):
+            out_channels, kernel_size, stride = i
+            conv_layers.append(nn.Conv2d(in_channels=4 if len(conv_layers)==0 else conv_layers[-1].out_channels,
+                                         out_channels=out_channels,
+                                         kernel_size=kernel_size,
+                                         stride=stride,
+                                         padding=kernel_size//2))
+            conv_layers.append(nn.ReLU())
+        self.conv = nn.Sequential(*conv_layers)
 
         self.fc = nn.Sequential(
             nn.Flatten(),
@@ -461,16 +463,33 @@ class ConvActorCritic(nn.Module):
         h = self.fc(h)
         return self.policy(h), self.value(h)
 
-# -------------------------- Rollout, GAE, Offline PPO training --------------------------
+class MLPActorCritic(nn.Module):
+    def __init__(self, config):
+        super().__init__()
 
-GAMMA = CONFIG["GAMMA"]
-LAMBDA = CONFIG["LAMBDA"]
-EPSILON = CONFIG["EPSILON"]
-VALUE_LOSS_COEF = CONFIG["VALUE_LOSS_COEF"]
-ENTROPY_COEF = CONFIG["ENTROPY_COEF"]
+        grid_size=config.get("grid_size", 6)
+        hidden=config.get("mlp_hidden", 64)
+
+        layers = []
+        input_dim = 4 * grid_size * grid_size
+        for _ in range(config.get("mlp_layers", 2)):
+            layers.append(nn.Linear(input_dim, hidden))
+            layers.append(nn.ReLU())
+            input_dim = hidden
+        self.mlp = nn.Sequential(*layers)
+
+        self.policy = nn.Linear(hidden, 4)
+        self.value = nn.Linear(hidden, 1)
+
+    def forward(self, x):
+        if x.dim() == 3:
+            x = x.unsqueeze(0)
+        x = x.view(x.size(0), -1)
+        h = self.mlp(x)
+        return self.policy(h), self.value(h)
 
 
-def run_episode(env: PushCurriculumEnv, agent: ConvActorCritic, device=DEVICE):
+def run_episode(env: PushCurriculumEnv, agent: ConvActorCritic, device="cpu", gamma=0.99, lambda_coef=0.95):
     """
     Run a single episode (on-policy) collecting per-step quantities needed for offline update.
     Returns logs list: entries are (state_tensor, action, next_state_tensor, reward, done, logp_old, value)
@@ -511,14 +530,15 @@ def run_episode(env: PushCurriculumEnv, agent: ConvActorCritic, device=DEVICE):
             V_tp1 = 0.0
         else:
             V_tp1 = logs[t + 1][6]
-        delta = r + GAMMA * float(V_tp1) - float(V)
-        gae = delta + GAMMA * LAMBDA * gae
+        delta = r + gamma * float(V_tp1) - float(V)
+        gae = delta + gamma * lambda_coef * gae
         logs[t] = logs[t] + (gae,)
 
     return total_reward, total_entropy, total_steps, logs
 
 
-def offline_train(batch, agent: ConvActorCritic, optimizer: torch.optim.Optimizer, device=DEVICE):
+def offline_train(batch, agent: ConvActorCritic, optimizer: torch.optim.Optimizer,
+                 device="cpu", epsilon=0.2, value_loss_coef=0.3, entropy_coef=0.06):
     """
     Perform one epoch of PPO-style offline update on the provided batch (list of tuples like run_episode logs).
     Batch is a list of per-step entries (s, a, sp, r, done, logp_old, V_old, adv)
@@ -544,14 +564,14 @@ def offline_train(batch, agent: ConvActorCritic, optimizer: torch.optim.Optimize
 
     ratios = torch.exp(logp_new - Logp_old)
     unclipped = ratios * Adv_detached
-    clipped = torch.clamp(ratios, 1 - EPSILON, 1 + EPSILON) * Adv_detached
+    clipped = torch.clamp(ratios, 1 - epsilon, 1 + epsilon) * Adv_detached
     loss_policy = -torch.min(unclipped, clipped).mean()
 
     # Value target using RAW GAE (as in your reference trainer)
     V_target = V_old + GAE_raw
-    loss_value = VALUE_LOSS_COEF * F.mse_loss(V_new, V_target.detach())
+    loss_value = value_loss_coef * F.mse_loss(V_new, V_target.detach())
 
-    loss_entropy = -ENTROPY_COEF * entropy
+    loss_entropy = -entropy_coef * entropy
     loss = loss_policy + loss_value + loss_entropy
 
     optimizer.zero_grad()
@@ -562,7 +582,7 @@ def offline_train(batch, agent: ConvActorCritic, optimizer: torch.optim.Optimize
 
 # -------------------------- Small training loop and evaluation --------------------------
 
-def evaluate_policy(env: PushCurriculumEnv, agent: ConvActorCritic, episodes: int = 50, device=DEVICE, epoch=0):
+def evaluate_policy(env: PushCurriculumEnv, agent: ConvActorCritic, episodes: int = 50, device="cpu", epoch=0):
     agent.eval()
     successes = 0
     total_entropy = 0.0
@@ -702,16 +722,20 @@ def training_demo(args):
     Tiny training demo using the environment + offline PPO. This is intentionally small for a quick demo.
     """
 
-    num_epochs = args["num_epochs"]
-    episodes_per_epoch = args["episodes_per_epoch"]
-    levels_per_episode = args["levels_per_episode"]
-    device = args["device"]
-    lr = args["learning_rate"]
-    seed=args["seed"]
-    eval_episodes = args["eval_episodes"]
+    num_epochs = args.num_epochs
+    episodes_per_epoch = args.episodes_per_epoch
+    levels_per_episode = args.levels_per_episode
+    device = args.device
+    lr = args.learning_rate
+    seed=args.seed
+    eval_episodes = args.eval_episodes
     
-    env = PushCurriculumEnv(seed=seed)
-    agent = ConvActorCritic().to(device)
+    env = PushCurriculumEnv(config=args)
+
+    if args.use_conv:
+        agent = ConvActorCritic(config=args).to(device)
+    else:
+        agent = MLPActorCritic(config=args).to(device)
     optimizer = torch.optim.Adam(agent.parameters(), lr=lr)
 
     stats = defaultdict(list)
@@ -741,7 +765,9 @@ def training_demo(args):
         random.shuffle(epoch_batch)
         # sample subset if too large
         train_batch = epoch_batch[:1024]
-        loss_info = offline_train(train_batch, agent, optimizer, device=device)
+        loss_info = offline_train(train_batch, agent, optimizer, device=device,
+                                epsilon=args.epsilon , value_loss_coef=args.value_loss_coef,
+                                entropy_coef=args.entropy_coef)
         stats["reward"].append(avg_reward)
         stats["loss"].append(loss_info[0])
         stats["entropy"].append(avg_entropy)
@@ -798,6 +824,17 @@ def parse_args():
         "R_SUCCESS": 5.0,
         "R_BAD_PUSH": -2.0,
         "R_STEP": -0.01,
+
+        #Conv Network hyperparams
+        "Use_conv": True,
+        "CONV_HIDDEN": 64,
+        "CONV_LAYERS": 2,
+        "CONV_DEF": [(32,3,1),(32,3,1)],
+
+        #MLP Network hyperparams
+        "USE_MLP": False,
+        "MLP_HIDDEN": 64,
+        "MLP_LAYERS": 2,
 
         "DEVICE":  torch.device("cuda" if torch.cuda.is_available() else "cpu")
     }
@@ -868,11 +905,31 @@ def parse_args():
     parser.add_argument('--seed', type=int, default=42,
                         help='Random seed for reproducibility (default: 42)')
     
+    # Select Model Type
+    parser.add_argument('--use_conv', action='store_true', default=DEFAUL_ARGS["USE_CONV"],
+                        help='Use convolutional neural network for the agent (default: True)')
+    parser.add_argument('--use_mlp', action='store_true', default=DEFAUL_ARGS["USE_MLP"],
+                        help='Use MLP neural network for the agent (default: False)')
+    
+    # Conv Network hyperparameters
+    parser.add_argument('--conv_hidden', type=int, default=DEFAUL_ARGS["CONV_HIDDEN"],
+                        help='Number of hidden units in convolutional layers (default: 64)')
+    parser.add_argument('--conv_layers', type=int, default=DEFAUL_ARGS["CONV_LAYERS"],
+                        help='Number of convolutional layers (default: 2)')
+    parser.add_argument('--conv_def', type=List[Tuple], default=DEFAUL_ARGS["CONV_DEF"],
+                        help='Definition of convolutional layers as a list of tuples (out_channels, kernel_size, stride) (default: [(32,3,1),(32,3,1)])')
+    
+    # MLP Network hyperparameters
+    parser.add_argument('--mlp_hidden', type=int, default=DEFAUL_ARGS["MLP_HIDDEN"],
+                        help='Number of hidden units in MLP layers (default: 64)')
+    parser.add_argument('--mlp_layers', type=int, default=DEFAUL_ARGS["MLP_LAYERS"],
+                        help='Number of MLP layers (default: 2)')
+    
     return parser.parse_args()
     
 if __name__ == "__main__":
     
-    args = parse_args()
+    args = parse_args() 
 
     # Set random seeds for reproducibility
     torch.manual_seed(args.seed)
