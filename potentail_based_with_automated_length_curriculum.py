@@ -19,6 +19,7 @@ away from a box right next to the goal in a pushable position. and any push of t
 result in correct placement is a strong negative signal. also the environment class should be very versatile
 to changes because while training hyper param finetuning is key to checking right learning strategy.
 """
+import argparse
 
 from collections import deque, defaultdict
 import random
@@ -39,43 +40,9 @@ import matplotlib.pyplot as plt
 import shutil
 import imageio.v2 as imageio
 from PIL import Image, ImageDraw, ImageFont
-# -------------------------- Configurable hyperparameters --------------------------
-CONFIG = {
-    "GRID_SIZE": 6,
-    "GAMMA": 0.99,
-    "LAMBDA": 0.95,
-    "EPSILON": 0.2,
-    "VALUE_LOSS_COEF": 0.3,
-    "ENTROPY_COEF": 0.06,
-    "LEARNING_RATE": 6e-4,
 
-    # Curriculum parameters (tune these)
-    "STAGES": 4,
-    # Each stage controls how many distance steps agent may start away from canonical push location
-    "STAGE_DISTANCE": [0, 1, 2, 3],
-    "STAGE_MAX_STEPS": [2, 4, 8, 12],
-    "POTENTIAL_ALPHA": 0.9,  # interpolation between box->goal and agent->pushpos
 
-    # Replay pool
-    "REPLAY_POOL_CAPACITY": 500,
-    "REPLAY_SAMPLE_PROB": 0.3,  # probability to sample from replay pool when creating a new episode
-
-    # Advancement criteria
-    "EVAL_EPISODES": 100,
-    "ADVANCE_SUCCESS_RATE": 0.9,
-    "ADVANCE_ENTROPY_PROPORTION": 0.3, #(CURRENT ENTROPY/MAX ENTROPY)
-
-    # Base rewards
-    "R_SUCCESS": 5.0,
-    "R_BAD_PUSH": -2.0,
-    "R_STEP": -0.01,
-
-    "ANNEAL_HELPER_CHANNEL_FACTOR":0.99,
-}
-
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-# -------------------------- Utility functions --------------------------
+# -------------------------- Utility functions (.py) --------------------------
 
 def clamp_pos(pos, size):
     y, x = pos
@@ -728,16 +695,22 @@ def stream_episode(
     # Cleanup images
     shutil.rmtree(frame_dir)
 
-def training_demo(num_epochs: int = 20,
-                        episodes_per_epoch: int = 40,
-                        levels_per_episode: int = 6,
-                        device=DEVICE):
+def training_demo(args):
     """
     Tiny training demo using the environment + offline PPO. This is intentionally small for a quick demo.
     """
-    env = PushCurriculumEnv(seed=42)
+
+    num_epochs = args["num_epochs"]
+    episodes_per_epoch = args["episodes_per_epoch"]
+    levels_per_episode = args["levels_per_episode"]
+    device = args["device"]
+    lr = args["learning_rate"]
+    seed=args["seed"]
+    eval_episodes = args["eval_episodes"]
+    
+    env = PushCurriculumEnv(seed=seed)
     agent = ConvActorCritic().to(device)
-    optimizer = torch.optim.Adam(agent.parameters(), lr=CONFIG["LEARNING_RATE"])
+    optimizer = torch.optim.Adam(agent.parameters(), lr=lr)
 
     stats = defaultdict(list)
 
@@ -772,7 +745,7 @@ def training_demo(num_epochs: int = 20,
         stats["entropy"].append(avg_entropy)
         # periodic evaluation
         if epoch % 10 == 0:
-            succ_rate, avg_eval_entropy = evaluate_policy(env, agent, episodes=CONFIG["EVAL_EPISODES"], device=device, epoch=epoch)
+            succ_rate, avg_eval_entropy = evaluate_policy(env, agent, episodes=eval_episodes, device=device, epoch=epoch)
             advanced = env.maybe_advance_stage(succ_rate, avg_eval_entropy)
             if advanced:
                 save_stats_plot(stats, curriculum_stage)
@@ -791,11 +764,118 @@ def training_demo(num_epochs: int = 20,
 
     return env, agent
 
+def parse_args():
 
+    # -------------------------- Configurable hyperparameters --------------------------
+    DEFAUL_ARGS = {
+        "GRID_SIZE": 6,
+        "GAMMA": 0.99,
+        "LAMBDA": 0.95,
+        "EPSILON": 0.2,
+        "VALUE_LOSS_COEF": 0.3,
+        "ENTROPY_COEF": 0.06,
+        "LEARNING_RATE": 6e-4,
 
-if __name__ == "__main__":
+        # Curriculum parameters (tune these)
+        "STAGES": 4,
+        # Each stage controls how many distance steps agent may start away from canonical push location
+        "STAGE_DISTANCE": [0, 1, 2, 3],
+        "STAGE_MAX_STEPS": [2, 4, 8, 12],
+        "POTENTIAL_ALPHA": 0.9,  # interpolation between box->goal and agent->pushpos
 
-    env, agent = training_demo(num_epochs=3000, episodes_per_epoch=200)
+        # Replay pool
+        "REPLAY_POOL_CAPACITY": 500,
+        "REPLAY_SAMPLE_PROB": 0.3,  # probability to sample from replay pool when creating a new episode
 
+        # Advancement criteria
+        "EVAL_EPISODES": 100,
+        "ADVANCE_SUCCESS_RATE": 0.9,
+        "ADVANCE_ENTROPY_PROPORTION": 0.5, #(CURRENT ENTROPY/MAX ENTROPY)
 
+        # Base rewards
+        "R_SUCCESS": 5.0,
+        "R_BAD_PUSH": -2.0,
+        "R_STEP": -0.01,
+
+        "DEVICE":  torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    }
+
+    parser = argparse.ArgumentParser(description='Train a PushCurriculumEnv agent with offline PPO.')
+
+    # Environment parameters
+    parser.add_argument('--grid_size', type=int, default=DEFAUL_ARGS["GRID_SIZE"],
+                        help='Size of the grid environment (default: 6)')
     
+    # MDP parameters
+    parser.add_argument('--gamma', type=float, default=DEFAUL_ARGS["GAMMA"],
+                        help='Discount factor for rewards (default: 0.99)')
+    parser.add_argument('--r_success', type=float, default=DEFAUL_ARGS["R_SUCCESS"],
+                        help='Reward for successfully pushing box onto goal (default: 5.0)')
+    parser.add_argument('--r_bad_push', type=float, default=DEFAUL_ARGS["R_BAD_PUSH"],
+                        help='Penalty for invalid push attempts (default: -2.0)')
+    parser.add_argument('--r_step', type=float, default=DEFAUL_ARGS["R_STEP"],
+                        help='Step penalty for each action taken (default: -0.01)')
+    
+    # PPO parameters
+    parser.add_argument('--lambda', type=float, default=DEFAUL_ARGS["LAMBDA"],
+                        help='GAE lambda parameter (default: 0.95)')
+    parser.add_argument('--epsilon', type=float, default=DEFAUL_ARGS["EPSILON"],
+                        help='PPO clipping epsilon (default: 0.2)')
+    parser.add_argument('--value_loss_coef', type=float, default=DEFAUL_ARGS["VALUE_LOSS_COEF"],
+                        help='Coefficient for value loss (default: 0.3)')
+    parser.add_argument('--entropy_coef', type=float, default=DEFAUL_ARGS["ENTROPY_COEF"],
+                        help='Coefficient for entropy bonus (default: 0.06)')
+    
+    # Optimization parameters
+    parser.add_argument('--learning_rate', type=float, default=DEFAUL_ARGS["LEARNING_RATE"],
+                        help='Learning rate for the optimizer (default: 6e-4)')
+    parser.add_argument('--num_epochs', type=int, default=1000,
+                        help='Number of training epochs (default: 1000)')
+    parser.add_argument('--episodes_per_epoch', type=int, default=200,
+                        help='Number of episodes per training epoch (default: 200)')
+    
+    # Curriculum parameters
+    parser.add_argument('--stages', type=int, default=DEFAUL_ARGS["STAGES"],
+                        help='Number of curriculum stages (default: 4)')
+    parser.add_argument('--stage_distance', type=int, nargs='+', default=DEFAUL_ARGS["STAGE_DISTANCE"],
+                        help='List of distances for each curriculum stage (default: [0, 1, 2, 3])')
+    parser.add_argument('--stage_max_steps', type=int, nargs='+', default=DEFAUL_ARGS["STAGE_MAX_STEPS"],
+                        help='List of max steps for each curriculum stage (default: [2, 4, 8, 12])')
+
+    parser.add_argument('--replay_pool_capacity', type=int, default=DEFAUL_ARGS["REPLAY_POOL_CAPACITY"],
+                        help='Capacity of the replay pool (default: 500)')
+
+    parser.add_argument('--replay_sample_prob', type=float, default=DEFAUL_ARGS["REPLAY_SAMPLE_PROB"],
+                        help='Probability of sampling from replay pool when resetting (default: 0.3)')
+
+    # Reward shaping parameters
+    parser.add_argument('--potential_alpha', type=float, default=DEFAUL_ARGS["POTENTIAL_ALPHA"],
+                        help='Alpha parameter for potential-based reward shaping (default: 0.9)')
+    
+    # Evaluation parameters
+    parser.add_argument('--eval_episodes', type=int, default=DEFAUL_ARGS["EVAL_EPISODES"],
+                        help='Number of evaluation episodes (default: 100)')
+    parser.add_argument('--advance_success_rate', type=float, default=DEFAUL_ARGS["ADVANCE_SUCCESS_RATE"],
+                        help='Success rate threshold for curriculum advancement (default: 0.9)')
+    parser.add_argument('--advance_entropy_proportion', type=float, default=DEFAUL_ARGS["ADVANCE_ENTROPY_PROPORTION"],
+                        help='Entropy proportion threshold for curriculum advancement (default: 0.3)')
+    
+    # Cluster parameters
+    parser.add_argument('--device', type=str, default=str(DEFAUL_ARGS["DEVICE"]),
+                        help='Device to use for training (default: cuda if available else cpu)')
+    parser.add_argument('--seed', type=int, default=42,
+                        help='Random seed for reproducibility (default: 42)')
+    
+    return parser.parse_args()
+    
+if __name__ == "__main__":
+    
+    args = parse_args()
+
+    # Set random seeds for reproducibility
+    torch.manual_seed(args.seed)
+    np.random.seed(args.seed)
+    random.seed(args.seed)
+
+    env, agent = training_demo(args)
+
