@@ -66,7 +66,7 @@ class PushCurriculumEnv:
     def __init__(self, config: Optional[Dict] = None):
         assert config is not None, "Config dictionary must be provided"
         self.config = config
-        self.grid_size = self.config.get("GRID_SIZE", 6)
+        self.grid_size = self.config.get("grid_size", 6)
         self.rng = random.Random()
         self.np_rng = np.random.default_rng() # no longer worry about this seed because we define it externally
         self.action_map = [(-1, 0), (1, 0), (0, -1), (0, 1)]
@@ -724,7 +724,6 @@ def training_demo(args):
 
     num_epochs = args.num_epochs
     episodes_per_epoch = args.episodes_per_epoch
-    levels_per_episode = args.levels_per_episode
     device = args.device
     lr = args.learning_rate
     seed=args.seed
@@ -826,7 +825,7 @@ def parse_args():
         "R_STEP": -0.01,
 
         #Conv Network hyperparams
-        "Use_conv": True,
+        "USE_CONV": True,
         "CONV_HIDDEN": 64,
         "CONV_LAYERS": 2,
         "CONV_DEF": [(32,3,1),(32,3,1)],
@@ -835,7 +834,7 @@ def parse_args():
         "USE_MLP": False,
         "MLP_HIDDEN": 64,
         "MLP_LAYERS": 2,
-
+        
         "DEVICE":  torch.device("cuda" if torch.cuda.is_available() else "cpu")
     }
 
