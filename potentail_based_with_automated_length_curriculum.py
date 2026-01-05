@@ -63,10 +63,10 @@ class PushCurriculumEnv:
     State is fully observable by default: (agent_pos, box_pos, goal_pos)
     """
 
-    def __init__(self, config: Optional[Dict] = None):
+    def __init__(self, config = None):
         assert config is not None, "Config dictionary must be provided"
         self.config = config
-        self.grid_size = self.config.get("grid_size", 6)
+        self.grid_size = config.grid_size
         self.rng = random.Random()
         self.np_rng = np.random.default_rng() # no longer worry about this seed because we define it externally
         self.action_map = [(-1, 0), (1, 0), (0, -1), (0, 1)]
@@ -82,8 +82,8 @@ class PushCurriculumEnv:
 
         # Curriculum state
         self.stage = 0
-        self.replay_pool = deque(maxlen=self.config["REPLAY_POOL_CAPACITY"])  # stores tuples of initial states
-        self.replay_sample_prob = self.config["REPLAY_SAMPLE_PROB"]
+        self.replay_pool = deque(maxlen=self.config.replay_pool_capacity)  # stores tuples of initial states
+        self.replay_sample_prob = self.config.replay_sample_prob
 
         # diagnostics (rolling)
         self.diagnostics = defaultdict(lambda: deque(maxlen=200))
@@ -184,7 +184,7 @@ class PushCurriculumEnv:
         Potential is deterministic and depends only on the current state (agent, box, goal).
         It interpolates between box->goal distance and agent->pushpos distance using alpha.
         """
-        alpha = self.config["POTENTIAL_ALPHA"]
+        alpha = self.config.potential_alpha
         push_pos = self._canonical_push_position(agent, box, goal)
         if push_pos == None:
             return None
@@ -211,7 +211,7 @@ class PushCurriculumEnv:
         self.box_pos = b
         self.goal_pos = g
         self.push_pos = p
-        self.max_steps = self.config["STAGE_MAX_STEPS"][self.stage]
+        self.max_steps = self.config.stage_max_steps[self.stage]
         self.left_steps = self.max_steps
         self.finished = False
 
@@ -229,7 +229,7 @@ class PushCurriculumEnv:
         self.box_pos = b
         self.goal_pos = g
         self.push_pos = p
-        self.max_steps = self.config["STAGE_MAX_STEPS"][self.stage]
+        self.max_steps = self.config.stage_max_steps[self.stage]
         self.left_steps = self.max_steps
         self.finished = False   
         return self.render_state()
@@ -282,7 +282,7 @@ class PushCurriculumEnv:
         # check bounds for agent
         if not (0 <= a_new[0] < self.grid_size and 0 <= a_new[1] < self.grid_size):
             # invalid move off-grid; treat as small penalty and do not move
-            return a_old, b_old, self.config["R_BAD_PUSH"], False
+            return a_old, b_old, self.config.r_bad_push, False
 
         # push if moving into box
         if self._is_push(a_old, a_new, b_old):
@@ -290,20 +290,20 @@ class PushCurriculumEnv:
             b_target = (b_old[0] + dy, b_old[1] + dx)
             if not (0 <= b_target[0] < self.grid_size and 0 <= b_target[1] < self.grid_size):
                 # blocked by wall: invalid push
-                return a_old, b_old, self.config["R_BAD_PUSH"], False
+                return a_old, b_old, self.config.r_bad_push, False
             # valid push -> move box
             a_new_final = b_old  # agent occupies box's previous cell
             b_new = b_target
             # determine if success
             if b_new == self.goal_pos:
-                return a_new_final, b_new, self.config["R_SUCCESS"], True
+                return a_new_final, b_new, self.config.r_success, True
             else:
                 # bad/accidental push (box moved to non-goal)
-                return a_new_final, b_new, self.config["R_STEP"], False
+                return a_new_final, b_new, self.config.r_step, False
         else:
             # normal move
             # if step causes box to be on goal already, it's success only if box on goal (it isn't because we didn't push)
-            return a_new, b_old, self.config["R_STEP"], False
+            return a_new, b_old, self.config.r_step, False
 
     def step(self, action: int):
         if self.finished:
@@ -336,7 +336,7 @@ class PushCurriculumEnv:
             self.finished = True
 
         # shaped reward
-        shaped_reward = reward + self.config["GAMMA"] * phi_post - phi_prev
+        shaped_reward = reward + self.config.gamma * phi_post - phi_prev
 
         done = base_done or (self.left_steps <= 0)
         if done:
@@ -359,11 +359,11 @@ class PushCurriculumEnv:
         Called by trainer after evaluation. If criteria met, advance stage.
         Returns True if advanced.
         """
-        if self.stage + 1 >= len(self.config["STAGE_DISTANCE"]):
+        if self.stage + 1 >= len(self.config.stage_distance):
             return False
-        if success_rate >= self.config["ADVANCE_SUCCESS_RATE"] and avg_entropy <= self.config["ADVANCE_ENTROPY_PROPORTION"] * math.log(4):
+        if success_rate >= self.config.advance_success_rate and avg_entropy <= self.config.advance_entropy_proportion * math.log(4):
             self.reset_buffer()
-            for _ in range(self.config["REPLAY_POOL_CAPACITY"]):
+            for _ in range(self.config.replay_pool_capacity):
                 self.reset(use_replay=False)
                 self.add_to_replay((self.agent_pos, self.box_pos, self.goal_pos, self.push_pos))
 
@@ -433,13 +433,13 @@ class ConvActorCritic(nn.Module):
     def __init__(self, config):
         super().__init__()
 
-        grid_size=config.get("grid_size", 6)
-        hidden=config.get("conv_hidden", 64)
+        grid_size=config.grid_size
+        hidden=config.conv_hidden
 
         conv_layers = []
-        for i in config.get("conv_def", [(32,3,1),(32,3,1)]):
+        for i in config.conv_def:
             out_channels, kernel_size, stride = i
-            conv_layers.append(nn.Conv2d(in_channels=4 if len(conv_layers)==0 else conv_layers[-1].out_channels,
+            conv_layers.append(nn.Conv2d(in_channels=4 if len(conv_layers)==0 else conv_layers[-2].out_channels,
                                          out_channels=out_channels,
                                          kernel_size=kernel_size,
                                          stride=stride,
@@ -467,12 +467,12 @@ class MLPActorCritic(nn.Module):
     def __init__(self, config):
         super().__init__()
 
-        grid_size=config.get("grid_size", 6)
-        hidden=config.get("mlp_hidden", 64)
+        grid_size=config.grid_size
+        hidden=config.mlp_hidden
 
         layers = []
         input_dim = 4 * grid_size * grid_size
-        for _ in range(config.get("mlp_layers", 2)):
+        for _ in range(config.mlp_layers):
             layers.append(nn.Linear(input_dim, hidden))
             layers.append(nn.ReLU())
             input_dim = hidden
