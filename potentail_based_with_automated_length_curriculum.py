@@ -93,8 +93,10 @@ class PushCurriculumEnv:
         # internal
         self.last_reward = 0.0
         self.last_phi = 0.0
+
     def manhattan(self, a: Tuple[int, int], b: Tuple[int, int]) -> int:
         return abs(a[0] - b[0]) + abs(a[1] - b[1])
+    
     def in_bounds(self, pos):
         return 0 <= pos[0] < self.grid_size and 0 <= pos[1] < self.grid_size
 
@@ -178,7 +180,6 @@ class PushCurriculumEnv:
         return candidates[i]
 
 
-
     # ---------------- potential function (state-only) ----------------
     def _compute_phi(self, agent: Tuple[int, int], box: Tuple[int, int], goal: Tuple[int, int]) -> float:
         """
@@ -194,8 +195,6 @@ class PushCurriculumEnv:
         # Negative distances as potentials (lower is better), so phi higher when closer -> -distance
         phi = -( (1 - alpha) * d_box_goal + alpha * d_agent_push )
         return float(phi)
-
-
 
     # ------------------ public API: reset, step, render ------------------
     def reset(self, use_replay: bool = True):
@@ -433,8 +432,11 @@ class PushCurriculumEnv:
 # -------------------------- Simple policy / value network --------------------------
 
 class ConvActorCritic(nn.Module):
-    def __init__(self, grid_size=6, hidden=64):
+    def __init__(self, config):
         super().__init__()
+
+        grid_size=config.get("grid_size", 6)
+        hidden=config.get("hidden", 64)
 
         self.conv = nn.Sequential(
             nn.Conv2d(4, 32, kernel_size=3, padding=1),
