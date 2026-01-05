@@ -54,7 +54,7 @@ CONFIG = {
     # Each stage controls how many distance steps agent may start away from canonical push location
     "STAGE_DISTANCE": [0, 1, 2, 3],
     "STAGE_MAX_STEPS": [2, 4, 8, 12],
-    "POTENTIAL_ALPHA": 0.25,  # interpolation between box->goal and agent->pushpos
+    "POTENTIAL_ALPHA": 0.9,  # interpolation between box->goal and agent->pushpos
 
     # Replay pool
     "REPLAY_POOL_CAPACITY": 500,
@@ -197,8 +197,8 @@ class PushCurriculumEnv:
     def _canonical_push_position(self, agent: Tuple[int, int], box: Tuple[int, int], goal: Tuple[int, int]) -> Tuple[int, int]:
         by, bx = box
         gy, gx = goal
-        dy = int(math.copysign(1, gy - by))
-        dx = int(math.copysign(1, gx - bx))
+        dy = int(math.copysign(1, gy - by)) if gy-by != 0 else 0
+        dx = int(math.copysign(1, gx - bx)) if gx - bx != 0 else 0
         #these are the directions in which to push the box.
         candidates = []
         if dy != 0:
@@ -262,6 +262,19 @@ class PushCurriculumEnv:
 
         return self.render_state()
     
+    def load(self, tup):
+        a, b, g, p = tup
+        self.agent_pos = a
+        self.box_pos = b
+        self.goal_pos = g
+        self.push_pos = p
+        self.max_steps = self.config["STAGE_MAX_STEPS"][self.stage]
+        self.left_steps = self.max_steps
+        self.finished = False   
+        return self.render_state()
+    def share(self):
+        return (self.agent_pos,self.box_pos,self.goal_pos,self.push_pos)
+
     def render_state(self):
         """
         Returns a (C, H, W) tensor.
@@ -433,6 +446,13 @@ class PushCurriculumEnv:
         y0 = ky * cell_size
         inset = cell_size // 8
         draw.rectangle([x0+inset, y0+inset, x0 + cell_size - inset, y0 + cell_size - inset], fill=(255,255, 0))
+
+        zy, zx = self.push_pos
+        ky, kx = self.box_pos
+        x0 = zx * cell_size
+        y0 = zy * cell_size
+        inset = cell_size // 4
+        draw.rectangle([x0+inset, y0+inset, x0 + cell_size - inset, y0 + cell_size - inset], fill=(128,0, 0))
         if show_grid:
             for cx in range(self.grid_size + 1):
                 x = cx * cell_size
@@ -500,6 +520,7 @@ def run_episode(env: PushCurriculumEnv, agent: ConvActorCritic, device=DEVICE):
             logits, value = agent(obs.to(device))
             logits = logits.squeeze(0)
             value = value.squeeze(0)
+
             dist = torch.distributions.Categorical(logits=logits)
             action = dist.sample()
             logp_old = dist.log_prob(action).detach()
@@ -574,23 +595,30 @@ def offline_train(batch, agent: ConvActorCritic, optimizer: torch.optim.Optimize
 
 # -------------------------- Small training loop and evaluation --------------------------
 
-def evaluate_policy(env: PushCurriculumEnv, agent: ConvActorCritic, episodes: int = 50, device=DEVICE):
+def evaluate_policy(env: PushCurriculumEnv, agent: ConvActorCritic, episodes: int = 50, device=DEVICE, epoch=0):
     agent.eval()
     successes = 0
     total_entropy = 0.0
+    failures = []
     for _ in range(episodes):
         obs = env.reset(use_replay=False)
+        tup =  env.share()
         while not env.finished:
             with torch.no_grad():
                 logits, _ = agent(obs.to(device))
                 logits = logits.squeeze(0)
                 dist = torch.distributions.Categorical(logits=logits)
-                action = dist.sample()
+                action = dist.probs.argmax(dim=-1)
                 total_entropy += dist.entropy().item()
             _, r, done, _ = env.step(int(action.item()))
         # success if box on goal
         if env.box_pos == env.goal_pos:
             successes += 1
+        elif epoch%200 == 0:
+            failures.append(tup)
+    random.shuffle(failures)
+    for idx, item in enumerate(failures[:4]):
+        stream_episode(env, agent, f"fails/fail_{epoch}_{idx}.gif", total_duration_sec=30, load=True, info=item)
     avg_entropy = total_entropy / max(1, episodes)
     return successes / max(1, episodes), avg_entropy
 
@@ -635,26 +663,29 @@ def stream_episode(
     env:PushCurriculumEnv,
     agent,
     gif_path="episode.gif",
-    total_duration_sec=8,
-    frame_dir="images"
+    total_duration_sec=30,
+    frame_dir="images",
+    load=False,
+    info=None,
 ):
     os.makedirs(frame_dir, exist_ok=True)
 
-    fps = 4 / total_duration_sec
+    fps = 2 / total_duration_sec
     frame_duration = 1.0 / fps
 
     frames = []
     total_steps = 0
-
-    env.reset(False)
-
-    x = env.render_state()
+    if load:
+        x = env.load(info)
+    else:
+        x = env.reset(False)
 
     while not env.finished:
         with torch.no_grad():
             logits, value = agent(x)
             dist = torch.distributions.Categorical(logits=logits)
-            action = dist.sample()
+            print(dist.probs)
+            action = dist.probs.argmax(dim=-1)
 
         frame_path = os.path.join(frame_dir, f"step_{total_steps:04d}.png")
         env.render_for_human(filename=frame_path)
@@ -662,10 +693,10 @@ def stream_episode(
         # Load immediately into memory
         frames.append(imageio.imread(frame_path))
 
-        _ = env.step(action.item())
-        x = env.render_state()
+        x, _, _, _ = env.step(action.item())
         total_steps += 1
     env.render_for_human(filename=frame_path)
+
     # Load immediately into memory
     frames.append(imageio.imread(frame_path))
     print(f"length: {total_steps}")
@@ -696,6 +727,8 @@ def training_demo(num_epochs: int = 20,
 
     curriculum_stage = 0
 
+    ensure_dir("fails")
+
     for epoch in range(num_epochs):
         # collect episodes and train
         epoch_batch = []
@@ -723,7 +756,7 @@ def training_demo(num_epochs: int = 20,
         stats["entropy"].append(avg_entropy)
         # periodic evaluation
         if epoch % 10 == 0:
-            succ_rate, avg_eval_entropy = evaluate_policy(env, agent, episodes=CONFIG["EVAL_EPISODES"], device=device)
+            succ_rate, avg_eval_entropy = evaluate_policy(env, agent, episodes=CONFIG["EVAL_EPISODES"], device=device, epoch=epoch)
             advanced = env.maybe_advance_stage(succ_rate, avg_eval_entropy)
             if advanced:
                 save_stats_plot(stats, curriculum_stage)
@@ -734,9 +767,9 @@ def training_demo(num_epochs: int = 20,
                 if curriculum_stage == 5:
                     break
             print(f"Epoch {epoch:3d} | reward {avg_reward:6.3f} | loss {loss_info[0]:.4f} | succ {succ_rate:.3f} | adv:{advanced}")
-            if epoch % 100 == 0:
-                ensure_dir("gifs")
-                stream_episode(env, agent, f"gifs/epoch{epoch}.gif")
+            #if epoch % 100 == 0:
+            #    ensure_dir("gifs")
+            #    stream_episode(env, agent, f"gifs/epoch{epoch}.gif")
         else:
             print(f"Epoch {epoch:3d} | reward {avg_reward:6.3f} | loss {loss_info[0]:.4f}")
 
