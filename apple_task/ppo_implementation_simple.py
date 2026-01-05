@@ -159,7 +159,7 @@ GAMMA = 0.9
 LAMBDA = 0 #TD(0)
 EPSILON = 0.2
 VALUE_LOSS_COEF = 0.6
-LEVELS_PER_EPISODE = 5
+LEVELS_PER_EPISODE = 15
 REPLAYS = 1
 EPISODES_CURR_ZERO = 200
 EPISODES_CURR_ONE = 400
@@ -221,7 +221,7 @@ def offline_train(batch, agent, optimizer, talkative=False, CE=0.8):
     R = torch.tensor([r_t for s_t, a_t, s_tplus1, r_t, done, logp_old in batch], device=S.device)
     Done = torch.tensor([done for s_t, a_t, s_tplus1, r_t, done, logp_old in batch], device=S.device, dtype=torch.float)
     Logp_old = torch.stack([logp_old for s_t, a_t, s_tplus1, r_t, done, logp_old in batch])
-    for  i in range(3):
+    for  i in range(1):
         # Forward pass on batched states
         logits, values = agent(S)
         values = values.squeeze()
