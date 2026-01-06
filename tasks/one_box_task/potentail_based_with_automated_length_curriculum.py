@@ -247,17 +247,17 @@ class PushCurriculumEnv:
           3 = push position (optional curriculum signal)
         """
         H = W = self.grid_size
-        obs = torch.zeros((4, H, W), dtype=torch.float32)
-
+        obs = torch.zeros((3, H, W), dtype=torch.float32)
+        #obs = torch.zeros((4, H, W), dtype=torch.float32)
         ay, ax = self.agent_pos
         by, bx = self.box_pos
         gy, gx = self.goal_pos
-        py, px = self.push_pos # TODO
+        py, px = self.push_pos # Done
 
         obs[0, ay, ax] = 1.0
         obs[1, by, bx] = 1.0
         obs[2, gy, gx] = 1.0
-        obs[3, py, px] = 1.0
+        #obs[3, py, px] = 1.0
 
         return obs
 
@@ -360,8 +360,8 @@ class PushCurriculumEnv:
         Returns True if advanced.
         """
         if self.stage + 1 >= len(self.config.stage_distance):
-            return False
-        if success_rate >= self.config.advance_success_rate and avg_entropy <= self.config.advance_entropy_proportion * math.log(4):
+            return True
+        if success_rate >= self.config.advance_success_rate: # and avg_entropy <= self.config.advance_entropy_proportion * math.log(4):
             self.reset_buffer()
             for _ in range(self.config.replay_pool_capacity):
                 self.reset(use_replay=False)
@@ -439,6 +439,7 @@ class ConvActorCritic(nn.Module):
         conv_layers = []
         for i in config.conv_def:
             out_channels, kernel_size, stride = i
+            # TAG
             conv_layers.append(nn.Conv2d(in_channels=4 if len(conv_layers)==0 else conv_layers[-2].out_channels,
                                          out_channels=out_channels,
                                          kernel_size=kernel_size,
@@ -471,7 +472,8 @@ class MLPActorCritic(nn.Module):
         hidden=config.mlp_hidden
 
         layers = []
-        input_dim = 4 * grid_size * grid_size
+        # TAG
+        input_dim = 3 * grid_size * grid_size
         for _ in range(config.mlp_layers):
             layers.append(nn.Linear(input_dim, hidden))
             layers.append(nn.ReLU())
@@ -780,7 +782,7 @@ def training_demo(args):
 
                 curriculum_stage += 1
                 stats = defaultdict(list)
-                if curriculum_stage == 5:
+                if curriculum_stage == 4:
                     break
             print(f"Epoch {epoch:3d} | reward {avg_reward:6.3f} | loss {loss_info[0]:.4f} | succ {succ_rate:.3f} | adv:{advanced}")
             #if epoch % 100 == 0:
