@@ -165,68 +165,67 @@ class BoardEncoder(nn.Module):
 
         return h
 
-class CausalSelfAttention(nn.Module):
-
-    def __init__(
-        self,
-        d,
-        H,
-        T,
-        bias=False,
-        dropout=0.2,
-    ):
-        """
-        Arguments:
-        d: size of embedding dimension
-        H: number of attention heads
-        T: maximum length of input sequences (in tokens)
-        bias: whether or not to use bias in linear layers
-        dropout: probability of dropout
-        """
+class CausalQueryAttention(nn.Module):
+    def __init__(self, config):
         super().__init__()
-        assert d % H == 0
+        assert config.n_embd % config.n_head == 0
+        
+        # Key, Query, Value projections
+        self.c_attn = nn.Linear(config.n_embd, 3 * config.n_embd, bias=config.bias)
+        self.c_proj = nn.Linear(config.n_embd, config.n_embd, bias=config.bias)
+        
+        self.attn_dropout = nn.Dropout(config.dropout)
+        self.resid_dropout = nn.Dropout(config.dropout)
+        
+        self.n_head = config.n_head
+        self.n_embd = config.n_embd
+        self.dropout = config.dropout
 
-        # key, query, value projections for all heads, but in a batch
-        # output is 3X the dimension because it includes key, query and value
-        self.c_attn = nn.Linear(d, 3*d, bias=bias)
+        # Register a large buffer for the causal mask (lower triangular)
+        # We assume max_block_size is the maximum T ever seen
+        self.register_buffer("bias", torch.tril(torch.ones(config.block_size, config.block_size))
+                                     .view(1, 1, config.block_size, config.block_size))
 
-        # projection of concatenated attention head outputs
-        self.c_proj = nn.Linear(d, d, bias=bias)
+    def forward(self, x, k=None):
+        B, T, C = x.size() # Batch, Time (Sequence Length), Channels (Embed Dim)
+        if k is None:
+            k = T        
+        assert k <= T
 
-        # dropout modules
-        self.attn_dropout = nn.Dropout(dropout)
-        self.resid_dropout = nn.Dropout(dropout)
-        self.H = H
-        self.d = d
 
-        # causal mask to ensure that attention is only applied to
-        # the left in the input sequence
-        self.register_buffer("mask", torch.tril(torch.ones(T, T))
-                                    .view(1, 1, T, T))
+        qkv = self.c_attn(x)
+        q, k_vec, v = qkv.split(self.n_embd, dim=2)
+        
+        # Q shape: [B, k, C]
+        q = q[:, -k:, :] 
 
-    def forward(self, x):
-        B, T, _ = x.size() # batch size, sequence length, embedding dimensionality
+        # k_vec and v remain length T
+        k_vec = k_vec.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
+        q = q.view(B, k, self.n_head, C // self.n_head).transpose(1, 2)         # (B, nh, k, hs)
+        v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)         # (B, nh, T, hs)
 
-        # compute query, key, and value vectors for all heads in batch
-        # split the output into separate query, key, and value tensors
-        q, k, v  = self.c_attn(x).split(self.d, dim=2) # [B, T, d]
+        # 4. Compute Attention Scores
+        # (B, nh, k, hs) x (B, nh, hs, T) -> (B, nh, k, T)
+        att = (q @ k_vec.transpose(-2, -1)) * (1.0 / math.sqrt(k_vec.size(-1)))
 
-        # reshape tensor into sequences of smaller token vectors for each head
-        k = k.view(B, T, self.H, self.d // self.H).transpose(1, 2) # [B, H, T, d // H]
-        q = q.view(B, T, self.H, self.d // self.H).transpose(1, 2)
-        v = v.view(B, T, self.H, self.d // self.H).transpose(1, 2)
-
-        # compute the attention matrix, perform masking, and apply dropout
-        att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1))) # [B, H, T, T]
-        att = att.masked_fill(self.mask[:,:,:T,:T] == 0, float('-inf'))
+        # 5. Apply Causal Mask
+        # We need the mask to align such that the last query sees everything, 
+        # and previous queries see their respective pasts.
+        # We take the bottom k rows of the T x T causal mask.
+        mask_slice = self.bias[:, :, -k:, :T]
+        att = att.masked_fill(mask_slice == 0, float('-inf'))
+        
         att = F.softmax(att, dim=-1)
         att = self.attn_dropout(att)
-
-        # compute output vectors for each token
-        y = att @ v # [B, H, T, d // H]
-
-        # concatenate outputs from each attention head and linearly project
-        y = y.transpose(1, 2).contiguous().view(B, T, self.d)
+        
+        # 6. Aggregate Values
+        # (B, nh, k, T) x (B, nh, T, hs) -> (B, nh, k, hs)
+        y = att @ v 
+        
+        # 7. Reassemble Heads
+        y = y.transpose(1, 2).contiguous().view(B, k, C)
+        
+        # Output projection
         y = self.resid_dropout(self.c_proj(y))
+        
         return y
-
