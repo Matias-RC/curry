@@ -52,6 +52,9 @@ class SokobanCurriculumEnvironment:
 
         self.replay_pool =deque(maxlen=self.config.replay_pool_capacity)
         self.replay_sample_prob = self.config.replay_sample_prob
+
+        self.stage = 0
+        self.sub_stage = 0
     
     def _is_push(self, agent_to, boxes):
         return agent_to in boxes
@@ -135,7 +138,6 @@ class SokobanCurriculumEnvironment:
 
         return obs
 
-
     def load(self, tup):
         self.agent_pos, self.boxes, self.goals, self.walls = tup
 
@@ -212,238 +214,17 @@ class SokobanCurriculumEnvironment:
         return filename
     def manhattan(self, a: Tuple[int, int], b: Tuple[int, int]) -> int:
         return abs(a[0] - b[0]) + abs(a[1] - b[1])
-class BoardEncoder(nn.Module):
-    def __init__(self, config):
-        super().__init__()
-
-        conv_layers = []
-        in_channels = 3
-
-        for out_channels, kernel_size in config.conv_layers:
-            conv_layers.append(
-                nn.Conv2d(
-                    in_channels,
-                    out_channels,
-                    kernel_size,
-                    stride=1,
-                    padding=kernel_size // 2
-                )
-            )
-            conv_layers.append(nn.ReLU())
-            in_channels = out_channels
-
-        self.conv = nn.Sequential(*conv_layers)
-        self.global_pool = nn.AdaptiveAvgPool2d((1, 1))
-        self.out_features = in_channels
-
-    def forward(self, x):
-        if x.dim() == 3:
-            x = x.unsqueeze(0)  # -> [1, C, H, W]
-
-        h = self.conv(x)                 # -> [B, C, H', W']
-        h = self.global_pool(h)          # -> [B, C, 1, 1]
-        h = h.view(h.size(0), -1)        # -> [B, C]
-
-        return h
-
-import argparse
-
-from collections import deque, defaultdict
-import random
-import math
-import copy
-import time
-from typing import Tuple, List, Dict, Optional
-
-import numpy as np
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-
-import os
-import csv
-import matplotlib.pyplot as plt
-
-import shutil
-import imageio.v2 as imageio
-from PIL import Image, ImageDraw, ImageFont
-
-#Load the agent
-from architecture import RotaryEmbedding, MLP, CausalAttentionBlock, CausalQueryAttention
-
-class Config:
-    n_embd = 64
-    n_head = 4
-    n_layers = 2
-    block_size = 500
-    dropout = 0.0
-    bias = False
-    conv_layers = [[32, 3], [64, 3]]
-    grid_size = (6,6)
-    initial_max_steps = 2
-    replay_pool_capacity = 500
-    replay_sample_prob = 0.2
-    alpha = 0.9
-
-
-class ActorCritic(nn.Module):
-    def __init__(self, config:Config):
-        super().__init__()
-        self.config = config
-        self.encoder = BoardEncoder(self.config)
-        self.layers = nn.ModuleList()
-        for _ in range(self.config.n_layers):
-            self.layers.append(CausalAttentionBlock(self.config))
-
-        self.policy = nn.Sequential(nn.Linear(self.config.n_embd, self.config.n_embd*2), nn.ReLU(), nn.Linear(self.config.n_embd*2, 4))
-        self.value = nn.Sequential(nn.Linear(self.config.n_embd, self.config.n_embd*2), nn.ReLU(), nn.Linear(self.config.n_embd*2, 1))
-
-    def forward(self, x, kv_cache=None):
-        if x.dim() == 3:
-            x = x.unsqueeze(0)
-        
-        h = self.encoder(x)
-        for idx, layer in enumerate(self.layers):
-            h, cache = layer(h, layer_past=kv_cache[idx])
-            kv_cache[idx] = cache
-
-        return self.policy(h), self.value(h), kv_cache
     
-    def fast_causal_forward(self, B:torch.Tensor, f):
-        """
-        Takes advantage of compounded plans
-        """
-        T = self.encoder(B) # (B, Ch, H, W) -> (B, T, d)
-        i  =  1
-        kv_cache = None
-        outputs = []
-        while i<T.size(1):
-            k = f(i)
-            if i == 1:
-                kv_cache = []
-                for layer in self.layers:
-                    out, cache = layer(T[:,i-1:i-1+k,:], k=None)
-                    kv_cache.append(cache)
-                    outputs.append(out)
-            else:
-                for idx, layer in enumerate(self.layers):
-                    out, cache = layer(T[:,i-1:i-1+k,:], k=kv_cache[idx])
-                    kv_cache[idx] = cache
-                    outputs.append(out)
-            i += k
-        
-
-agent = ActorCritic(Config())
-env_helper = SokobanCurriculumEnvironment(Config())
-
-class Loose_curr:
-    push_pos = (0,0)
-
-def sample_goal_box(env):
-    dirs = [(1,0),(-1,0),(0,1),(0,-1)]
-
-    while True:
-        d = random.choice(dirs)
-        gy = random.randint(0, 5)
-        gx = random.randint(0, 5)
-
-        by, bx = gy - d[0], gx - d[1]
-        py, px = by - d[0], bx - d[1]
-
-        G = (gy, gx)
-        B = (by, bx)
-        P = (py, px)
-
-        if env.in_bounds(B) and env.in_bounds(P):
-            return G, B, P
-        
-def sample_agent_path(env, P, B, N):
-    visited = {P}
-    path = [P]
-    for _ in range(N):
-        y, x = path[-1]
-        candidates = []
-        for dy, dx in env.action_map:
-            ny, nx = y + dy, x + dx
-            np = (ny, nx)
-            if not env.in_bounds(np):
-                continue
-            if np in visited:
-                continue
-            if np == B:
-                continue
-            candidates.append(np)
-        if not candidates:
-            return None
-        nxt = random.choice(candidates)
-        visited.add(nxt)
-        path.append(nxt)
-    return path[::-1]
-
-def sample_phase_N(env:SokobanCurriculumEnvironment, N):
-    while True:
-        G, B, P = sample_goal_box(env)
-        path = sample_agent_path(env, P, B, N)
-        if path is None:
-            continue
-        
-        A = path[0]
-        
-        return A, B, G, P
-
-def reset_zero(env:SokobanCurriculumEnvironment, use_replay:bool, stage:int, curriculum_obj:Loose_curr):
-    # possibly sample from replay pool
-    steps = [2, 4, 8, 12]
-    if use_replay and len(env.replay_pool) > 0 and random.random() < env.replay_sample_prob:
-        a, b, g, p = env.replay_pool.popleft()
-    else:
-        a, b, g, p = sample_phase_N(env, stage)
-    env.load((a, set((b,)), set((g,)), set(())))
-    curriculum_obj.push_pos = p
-    env.max_steps = steps[stage]
-    env.left_steps = env.max_steps
-    env.finished = False
-
-    return env.render_state()
-def update_zero(env:SokobanCurriculumEnvironment, curriculum_obj:Loose_curr,a:int):
-    def compute_phi(agent, box, goal, alpha):
-        by, bx = box
-        gy, gx = goal
-        dy = int(math.copysign(1, gy - by)) if gy-by != 0 else 0
-        dx = int(math.copysign(1, gx - bx)) if gx - bx != 0 else 0
-        #these are the directions in which to push the box.
-        candidates = []
-        if dy != 0:
-            if env.in_bounds((by-dy,bx)):
-                candidates.append((by-dy,bx))
-        if dx != 0:
-            if env.in_bounds((by,bx-dx)):
-                candidates.append((by,bx-dx))
-        if not candidates:
-            return None
-        i, _ = min(enumerate(candidates), key=lambda x:env.manhattan(x[1], agent))
-        push_pos = candidates[i]
-        d_box_goal = env.manhattan(box, goal)
-        d_agent_push = env.manhattan(agent, push_pos)
-        phi = -( (1 - alpha) * d_box_goal + alpha * d_agent_push )
-        return float(phi)
-    a_old = env.agent_pos
-    boxes_old = env.boxes
-    phi_prev = compute_phi(env.agent_pos, env.boxes.copy().pop(),env.goals.copy().pop(),env.config.alpha)
-    if phi_prev == None:
-        phi_prev = 0
-    a_pos, boxes, tup, is_finished = env_helper._apply_action(a)
-    env.agent_pos = a_pos
-    env.boxes  = boxes
-    
-    phi_post = compute_phi(env.agent_pos, env.boxes.copy().pop(),env.goals.copy().pop(),env.config.alpha)
-    
-    reward = (is_finished)*-0.1 +is_finished*5
-    if is_finished or phi_post == None:
-        phi_post = 0
-        env.finished = True
-    shaped_reward = reward + env.config.gamma * phi_post - phi_prev
-
-    
-
-
+    def reset_stage_zero(self, replay=False):
+        if replay and len(self.replay_pool)>0 and random.random() < self.replay_sample_prob:
+            p, b, g = self.replay_pool.popleft()
+        else:
+            goal_pos = (random.randint(0, self.size_y-1), random.randint(0, self.size_x-1))
+            g = set((goal_pos,))
+            box_candidates = []
+            for dy, dx in self.action_map:
+                if 0 <= goal_pos[0]+2*dy < self.size_y and 0<= goal_pos[1]+2*dx<self.size_x:
+                    pass
+        pass
+    def update_zero(self):
+        pass

@@ -4,6 +4,43 @@ import torch.nn as nn
 from torch.nn import functional as F
 from typing import Optional, Tuple
 
+
+class BoardEncoder(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+
+        conv_layers = []
+        in_channels = 3
+
+        for out_channels, kernel_size in config.conv_layers:
+            conv_layers.append(
+                nn.Conv2d(
+                    in_channels,
+                    out_channels,
+                    kernel_size,
+                    stride=1,
+                    padding=kernel_size // 2
+                )
+            )
+            conv_layers.append(nn.ReLU())
+            in_channels = out_channels
+
+        self.conv = nn.Sequential(*conv_layers)
+        self.global_pool = nn.AdaptiveAvgPool2d((1, 1))
+        self.out_features = in_channels
+
+    def forward(self, x):
+        if x.dim() == 3:
+            x = x.unsqueeze(0)  # -> [1, C, H, W]
+
+        h = self.conv(x)                 # -> [B, C, H', W']
+        h = self.global_pool(h)          # -> [B, C, 1, 1]
+        h = h.view(h.size(0), -1)        # -> [B, C]
+
+        return h
+
+
+
 # -----------------------------------------------------------------------------
 # 1. Rotary Positional Embeddings (RoPE)
 # -----------------------------------------------------------------------------
@@ -264,3 +301,47 @@ if __name__ == "__main__":
 
     print(f"Gen Output: {out_gen.shape}") # [1, 1, 128]
     print(f"New Cache Keys: {new_cache[0].shape}") # [1, 5, 4, 32] (Length increased to 5)
+
+
+class Config:
+    n_embd = 64
+    n_head = 4
+    n_layers = 2
+    block_size = 500
+    dropout = 0.0
+    bias = False
+    conv_layers = [[32, 3], [64, 3]]
+    grid_size = (6,6)
+    initial_max_steps = 2
+    replay_pool_capacity = 500
+    replay_sample_prob = 0.2
+    alpha = 0.9
+
+
+class ActorCritic(nn.Module):
+    def __init__(self, config:Config):
+        super().__init__()
+        self.config = config
+        self.encoder = BoardEncoder(self.config)
+        self.layers = nn.ModuleList()
+        for _ in range(self.config.n_layers):
+            self.layers.append(CausalAttentionBlock(self.config))
+
+        self.policy = nn.Sequential(nn.Linear(self.config.n_embd, self.config.n_embd*2), nn.ReLU(), nn.Linear(self.config.n_embd*2, 4))
+        self.value = nn.Sequential(nn.Linear(self.config.n_embd, self.config.n_embd*2), nn.ReLU(), nn.Linear(self.config.n_embd*2, 1))
+
+    def forward(self, x, kv_cache=None):
+        if x.dim() == 3:
+            x = x.unsqueeze(0,1) # [B, T, C, H, W]
+        if x.dim() == 4:
+            x = x.unsqueeze(0) #[B, T, C, H, W]
+
+        h = self.encoder(x) # [B, T, d]
+        if kv_cache == None:
+            kv_cache = []
+        for idx, layer in enumerate(self.layers):
+            kv_cache.append(None)
+            h, cache = layer(h, layer_past=kv_cache[idx])
+            kv_cache[idx] = cache
+
+        return self.policy(h), self.value(h), kv_cache
