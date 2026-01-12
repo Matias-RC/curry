@@ -216,15 +216,119 @@ class SokobanCurriculumEnvironment:
         return abs(a[0] - b[0]) + abs(a[1] - b[1])
     
     def reset_stage_zero(self, replay=False):
+        self.finished = False
+        self.left_steps = self.max_steps
+
         if replay and len(self.replay_pool)>0 and random.random() < self.replay_sample_prob:
             p, b, g = self.replay_pool.popleft()
         else:
             goal_pos = (random.randint(0, self.size_y-1), random.randint(0, self.size_x-1))
             g = set((goal_pos,))
-            box_candidates = []
+            dir_candidates = []
             for dy, dx in self.action_map:
                 if 0 <= goal_pos[0]+2*dy < self.size_y and 0<= goal_pos[1]+2*dx<self.size_x:
-                    pass
-        pass
-    def update_zero(self):
-        pass
+                    dir_candidates.append((dy,dx))
+            bx,by = random.choice(dir_candidates)
+            b = set(((goal_pos[0]+by,goal_pos[1]+bx),))
+            p = (goal_pos[0]+2*dy,goal_pos[1]+2*dx)
+        
+        #self.agent_pos = p
+        self.boxes = b
+        self.goals = g
+
+        # We Gotta take into coinsideration sub-stages
+        def traceN(env:SokobanCurriculumEnvironment, stage, ppos, box_pos, goal_pos):
+            visited_states = box_pos | goal_pos
+            for _ in range(stage):
+                cands = []
+                for dy, dy in env.action_map:
+                    ppos_prime = (ppos[0]+dy,  ppos[1]+dx)
+                    if ppos_prime not in visited_states and env.in_bounds(ppos_prime):
+                        cands.append(ppos_prime)
+
+                if not cands:
+                    return ppos
+                visited_states.add(ppos)
+                ppos = random.choice(cands)
+            return ppos
+        self.agent_pos = traceN(self, self.sub_stage, p, b, g)
+        return self.render_state()
+
+    def update_zero(self, action):
+        #For update we'd like to calculate the potential reward intentionally taking into coinsideration the canonical push
+        #Position where the box gets closer to the goal
+        def compute_phi(env, agent_pos, box_pos, goal_pos, push_pos):
+            #We intend to compute convex combination of two distances: 
+            pass
+
+
+        dy, dx = self.action_map[action]
+
+        agent_old = self.agent_pos
+        agent_new = (self.agent_pos[0]+dy ,self.agent_pos[1]+dx)
+
+        boxes_old = self.boxes.copy()
+        boxes_new = self.boxes.copy()
+
+
+        if not self.in_bounds(agent_new):
+            pass #gamma*phi(s')-phi(s) both are negative and equal thus the reward is slightly positive. To counter this the oficcial reward punishes 
+                    #the agent for stomping agains the wall
+        
+        if self._is_push(agent_new, self.boxes):
+            boxes_new.remove(agent_new)
+            boxes_new.add((agent_new[0]+dy, agent_new[1]+dx))
+
+        #then we'd like to compute phi function which is a convex addition of the manhattan distance between to variables.
+        #  Coinsider box to goal distance
+        #  Coinsider agent to canonical push pos
+
+        def canonical_push_pos(env:SokobanCurriculumEnvironment, agent,box,goal):
+            by, bx = box.pop()
+            gy, gx = goal.pop()
+            dy = int(math.copysign(1, gy - by)) if gy - by != 0 else 0
+            dx = int(math.copysign(1, gx - bx)) if gx - bx != 0 else 0
+            candidates = []
+            if dy != 0:
+                if env.in_bounds((by-dy, dx)):
+                    candidates.append((by-dy, dx))
+            if dx != 0:
+                if env.in_bounds((by, bx-dx)):
+                    candidates.append((by, bx-dx))
+            
+            if not candidates:
+                return None
+            i, _ = min(enumerate(candidates), key=lambda x:env.manhattan(x[1], agent))
+
+            return candidates[i]
+        
+        #Now it is necessary to calculate manhattan distance:
+
+        canonical = canonical_push_pos(self,agent_new, boxes_new.copy())
+        old_canonical  = canonical_push_pos(self, agent_old, boxes_old.copy())
+
+        print(self.manhattan(canonical, agent_new))
+        print(self.manhattan(old_canonical, agent_old))
+        self.render_for_human("test/test_render2.png")
+
+def ensure_dir(file_path):
+    directory = os.path.dirname(file_path)
+    if not os.path.exists(directory):
+        os.makedirs(directory)
+
+if __name__ == "__main__":
+    class Config:
+        grid_size = (6,6)
+        initial_max_steps = 100
+        replay_pool_capacity = 500
+        replay_sample_prob = 0.5
+
+    env = SokobanCurriculumEnvironment(config=Config())
+
+    #unit tetst
+    ensure_dir("test/test_render.png")
+    env.reset_stage_zero()
+    env.render_for_human("test/test_render.png")
+    a = int(input())
+    
+    env.update_zero(a)
