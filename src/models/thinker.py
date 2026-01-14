@@ -63,7 +63,7 @@ class ActionDecoder(nn.Module):
         self.model_name = config["model_name"]
         hidden_size = config["hidden_size"]
         vocab_size = config["vocab_size"]
-        num_think_steps = config["num_think_steps"]
+        self.num_think_steps = config["num_think_steps"]
 
         args = config["args"]
 
@@ -82,17 +82,26 @@ class ActionDecoder(nn.Module):
         self.lm_head = nn.Linear(hidden_size, vocab_size)
 
     def forward(self, x):
-        latent_states = x["latent_states"]
+        latent_states = x["latent_states"]  # (B, T, D)
+    
         if self.model_name == "qwen2":
-            outputs = self.backbone(inputs_embeds=latent_states)
-            hidden_states = outputs.last_hidden_state
-            logits = self.lm_head(hidden_states[:, :, :])
-
+            h = latent_states
+    
+            for _ in range(self.num_think_steps):
+                outputs = self.backbone(inputs_embeds=h)
+                h_new = outputs.last_hidden_state
+    
+                h = h + h_new
+    
+            logits = self.lm_head(h)
+    
             return {
                 "logits": logits,
             }
+    
         else:
             raise ValueError(f"Unknown model name: {self.model_name}")
+
 
 
 class Thinker(nn.Module):
@@ -150,6 +159,7 @@ if __name__ == "__main__":
         },
         "hidden_size": 32,
         "vocab_size": 4,
+        "num_think_steps":1
     }
 
     action_decoder = ActionDecoder(config_action_decoder)

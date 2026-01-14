@@ -24,6 +24,9 @@ def parser_args():
     # Thinker arguments
     parser.add_argument("--num_think_steps", type=int, default=2, help="Number of thinking steps")
 
+    # Curriculum arguments
+    parser.add_argument("--filter_by", type=str,default="no_filter" ,help="Options: shortest_first, longest_first, no_filter")
+
     return parser.parse_args()
 
 def set_seed_for_reproducibility(seed: int):
@@ -80,6 +83,7 @@ def main():
         "grid_shape_x": 10,
         "grid_shape_y": 10,
         "max_num_levels": args.max_num_levels,
+        "filter_by": args.filter_by,
     }
     total_dataset = SokobanDataset(config_total_dataset)
 
