@@ -128,7 +128,7 @@ def play(state, actions_str):
     return states
 
 def symbolic_state_to_tensor(state, grid_shape_x, grid_shape_y, channels):
-
+    num_channels = len(channels)
     tensor = torch.zeros((grid_shape_x, grid_shape_y, num_channels), dtype=torch.float32)
 
     for c, key in enumerate(channels):
@@ -137,7 +137,7 @@ def symbolic_state_to_tensor(state, grid_shape_x, grid_shape_y, channels):
         tensor[idx[:, 0], idx[:, 1], c] = 1.0
 
     return tensor
-
+    
 class SokobanDataset(Dataset):
     def __init__(self, config):
         self.config = config
