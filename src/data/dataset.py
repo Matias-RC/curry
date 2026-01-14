@@ -137,7 +137,7 @@ def symbolic_state_to_tensor(state, grid_shape_x, grid_shape_y, channels):
         tensor[idx[:, 0], idx[:, 1], c] = 1.0
 
     return tensor
-    
+
 class SokobanDataset(Dataset):
     def __init__(self, config):
         self.config = config
@@ -218,7 +218,7 @@ def collate_fn(batch):
     batch_actions = [item["actions_id"] for item in batch]
 
     batch_states_padded = torch.nn.utils.rnn.pad_sequence(batch_states, batch_first=True, padding_value=0.0)
-    batch_actions_padded = torch.nn.utils.rnn.pad_sequence(batch_actions, batch_first=True, padding_value=-1)
+    batch_actions_padded = torch.nn.utils.rnn.pad_sequence(batch_actions, batch_first=True, padding_value=-100)
 
     return {
         "states_tensors": batch_states_padded,

@@ -63,6 +63,7 @@ class ActionDecoder(nn.Module):
         self.model_name = config["model_name"]
         hidden_size = config["hidden_size"]
         vocab_size = config["vocab_size"]
+        num_think_steps = config["num_think_steps"]
 
         args = config["args"]
 
