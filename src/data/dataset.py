@@ -126,7 +126,7 @@ def play(state, actions_str):
         states.append(state)
 
     return states
-    
+
 def symbolic_state_to_tensor(state, grid_shape_x, grid_shape_y, channels):
 
     tensor = torch.zeros((grid_shape_x, grid_shape_y, num_channels), dtype=torch.float32)
@@ -211,6 +211,20 @@ class SokobanDataset(Dataset):
 
     def __getitem__(self, idx):
         return self.data[idx]
+
+
+def collate_fn(batch):
+    batch_states = [item["states_tensor"] for item in batch]
+    batch_actions = [item["actions_id"] for item in batch]
+
+    batch_states_padded = torch.nn.utils.rnn.pad_sequence(batch_states, batch_first=True, padding_value=0.0)
+    batch_actions_padded = torch.nn.utils.rnn.pad_sequence(batch_actions, batch_first=True, padding_value=-1)
+
+    return {
+        "states_tensors": batch_states_padded,
+        "actions_ids": batch_actions_padded
+    }
+
 
 # Example usage
 if __name__ == "__main__":
