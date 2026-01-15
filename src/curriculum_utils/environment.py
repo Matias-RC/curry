@@ -45,15 +45,17 @@ class SokobanEnvironment:
     def __init__(self, config=None):
         assert config is not None, "Config must be provided"
 
-        self.config = config
-        self.size_y, self.size_x = config.grid_size  # (height, width)
+        self.config = config #Config is dict
+        self.size_x = config["grid_shape_x"]
+        self.size_y = config["grid_shape_y"]
+
         self.action_map = [(-1, 0), (1, 0), (0, -1), (0, 1)]  # UP, DOWN, LEFT, RIGHT
 
-        self.max_steps = config.initial_max_steps
+        self.max_steps = config["max_steps_per_play"]
         self.batch_size = getattr(config, 'batch_size', 1)
 
         # Use device from config if available, otherwise default to CPU
-        self.device = getattr(config, 'device', 'cpu')
+        self.device = config["device"]
 
         # Batched state - each is a list of sets/tuples per batch element
         self.reset()
@@ -81,58 +83,50 @@ class SokobanEnvironment:
 
         return self._get_obs()
 
-    def load_levels(self, level_strings: List[str]) -> torch.Tensor:
+    def load_levels(self, level_strings) -> torch.Tensor:
         """
-        Load levels from string representations.
-
-        Args:
-            level_strings: List of strings where each string represents a level.
-                Rows are separated by newline characters.
-                Characters:
-                - '#' = wall
-                - '$' = box
-                - '.' or 'G' = goal
-                - '@' = player
-                - '*' = box on goal
-                - '+' = player on goal
-                - ' ' = empty space
-
-        Returns:
-            Initial observations as tensor [B, C, H, W]
+        Load levels from tensor representation
         """
         assert len(level_strings) == self.batch_size, \
             f"Expected {self.batch_size} levels, got {len(level_strings)}"
 
-        for i, level_str in enumerate(level_strings):
-            self._parse_level_string(i, level_str)
+        for i, level in enumerate(level_strings):
+            self._parse_level_tensor(i, level)
 
         return self._get_obs()
 
-    def _parse_level_string(self, batch_idx: int, level_str: str):
-        """Parse a level string and update state for given batch element."""
-        rows = level_str.strip().split('\n')
+    def tensor_to_symbolic_state(self, tensor):
+        H, W, C = tensor.shape
+        channels = ["walls", "boxes", "goals", "player"]
+        assert C == len(channels)
 
+        state = {}
+
+        for c, key in enumerate(channels):
+            # Find all active cells in this channel
+            idx = (tensor[:, :, c] > 0.5).nonzero(as_tuple=False)
+
+            if key == "player":
+                # Player must be a single position
+                if idx.shape[0] != 1:
+                    raise ValueError(f"Invalid player channel: {idx.shape[0]} active cells")
+                state[key] = (int(idx[0, 0]), int(idx[0, 1]))
+            else:
+                state[key] = set(
+                    (int(i), int(j)) for i, j in idx
+                )
+
+        return state
+
+
+    def _parse_level_tensor(self, batch_idx: int, level):
+        """Parse a level string and update state for given batch element."""
         self.walls[batch_idx].clear()
         self.boxes[batch_idx].clear()
         self.goals[batch_idx].clear()
 
         # Parse level - assuming all levels are same size as grid_size
-        for r, row in enumerate(rows):
-            for c, ch in enumerate(row):
-                if ch == '#':
-                    self.walls[batch_idx].add((r, c))
-                elif ch == '$':
-                    self.boxes[batch_idx].add((r, c))
-                elif ch in ['.', 'G']:
-                    self.goals[batch_idx].add((r, c))
-                elif ch == '@':
-                    self.player_pos[batch_idx] = (r, c)
-                elif ch == '*':  # box on goal
-                    self.boxes[batch_idx].add((r, c))
-                    self.goals[batch_idx].add((r, c))
-                elif ch == '+':  # player on goal
-                    self.player_pos[batch_idx] = (r, c)
-                    self.goals[batch_idx].add((r, c))
+        self.walls[batch_idx], self.boxes[batch_idx], self.goals[batch_idx], self.player_pos[batch_idx] = self.tensor_to_symbolic_state(level)
 
         self.done[batch_idx] = False
         self.steps_left[batch_idx] = self.max_steps
@@ -257,21 +251,20 @@ class SokobanEnvironment:
     def _is_solved(self, batch_idx: int) -> bool:
         """Check if all boxes are on goals for given batch element."""
         return self.boxes[batch_idx] == self.goals[batch_idx]
+    
+    def symbolic_state_to_tensor(self, state):
+        channels = ["walls", "boxes", "goals", "player"]
+        num_channels = len(channels)
+        tensor = torch.zeros((self.size_y, self.size_x, num_channels), dtype=torch.float32)
 
+        for c, key in enumerate(channels):
+            values = state[key] if key != "player" else {state[key]}
+            idx = torch.tensor(list(values), dtype=torch.long)  # shape [N, 2]
+            tensor[idx[:, 0], idx[:, 1], c] = 1.0
+
+        return tensor
+    
     def _get_obs(self) -> torch.Tensor:
-        """
-        Generate observations for all batch elements.
-
-        For completed levels (done=True), returns padded observations (all zeros).
-        This is compatible with the padding used in data/dataset.py collate_fn.
-
-        Returns:
-            Tensor of shape [B, C, H, W] where C=4:
-            - Channel 0: walls
-            - Channel 1: boxes
-            - Channel 2: goals
-            - Channel 3: player
-        """
         obs = torch.zeros(
             (self.batch_size, 4, self.size_y, self.size_x),
             dtype=torch.float32,
@@ -283,22 +276,7 @@ class SokobanEnvironment:
             if self.done[i]:
                 continue
 
-            # Walls (channel 0)
-            for wy, wx in self.walls[i]:
-                obs[i, 0, wy, wx] = 1.0
-
-            # Boxes (channel 1)
-            for by, bx in self.boxes[i]:
-                obs[i, 1, by, bx] = 1.0
-
-            # Goals (channel 2)
-            for gy, gx in self.goals[i]:
-                obs[i, 2, gy, gx] = 1.0
-
-            # Player (channel 3)
-            py, px = self.player_pos[i]
-            obs[i, 3, py, px] = 1.0
-
+            obs[i] = self.symbolic_state_to_tensor({"walls": self.walls[i], "player":self.player_pos[i], "goals":self.goals[i], "boxes":self.boxes[i]})
         return obs
 
     def render(self, batch_idx: int = 0) -> str:

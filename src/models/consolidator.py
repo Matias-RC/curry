@@ -1,8 +1,11 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from query_attention import QueryAttentionLayer
+from models.query_attention import QueryAttentionLayer
+import os
+import sys
 
+sys.path.append(os.path.abspath("../"))
 
 class TwoTowerEncoder(nn.Module):
     def __init__(self, config):

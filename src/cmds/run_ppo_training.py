@@ -5,6 +5,7 @@ import torch
 import os
 import sys
 from itertools import islice
+import copy
 
 sys.path.append(os.path.abspath("../"))
 
@@ -74,8 +75,17 @@ def make_batches(iterable, k):
 def main():
     args = parser_args()
     seed = args.seed
+    device = "cuda" if torch.cuda.is_available() else "cpu"
     set_seed_for_reproducibility(seed)
-    
+    from curriculum_utils.environment import SokobanEnvironment
+    config_sokoban_env = {
+        "grid_shape_x": 10,
+        "grid_shape_y": 10,
+        "device": device,
+        "max_steps_per_play": args.max_steps_per_play,
+    }
+    sokoban_env = SokobanEnvironment(config_sokoban_env)
+
 
     from data.dataset import SokobanDataset, collate_fn
     config_total_dataset = {
@@ -94,11 +104,8 @@ def main():
     num_total_levels = len(total_dataset)
     num_train_levels = int(train_fraction * num_total_levels)
     num_eval_levels = num_total_levels - num_train_levels
-    train_dataset, eval_dataset = torch.utils.data.random_split(
-        total_dataset,
-        [num_train_levels, num_eval_levels],
-        generator=torch.Generator().manual_seed(seed)
-    )
+
+    
     print(f"Total levels: {num_total_levels}, Train levels: {num_train_levels}, Eval levels: {num_eval_levels}")
 
     batch_size_train = batch_size_eval = args.batch_size_train
@@ -152,23 +159,43 @@ def main():
     consolidator.train()
 
     if torch.cuda.is_available():
-        model = model.to("cuda")
+        thinker = thinker.to("cuda")
+        consolidator = consolidator.to("cuda")
         print("Using GPU for training")
     else:
         print("Using CPU for training")
     # Optimzer
     learning_rate = args.learning_rate
-    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+    thinker_optimizer = torch.optim.Adam(thinker.parameters(), lr=learning_rate)
+    consolidator_optimizer = torch.optim.Adam(consolidator.parameters(), lr=learning_rate)
     loss_fn = torch.nn.CrossEntropyLoss(ignore_index=-100)
+
+    train_dataset = copy.deepcopy(total_dataset)
+    train_dataset.data = train_dataset.data[:num_train_levels]
+    eval_dataset = total_dataset
+    eval_dataset.data = eval_dataset.data[num_train_levels:]
+    
 
     num_epochs = args.num_epochs
     for epoch in range(num_epochs):
         train_dataset.shuffle_pool()
         # Make batches
-        for batch_idx, batch in enumerate(make_batches(train_dataset)):
-            optimizer.zero_grad()
-            pass
+        for batch_idx, batch in enumerate(make_batches(train_dataset.data, args.batch_size_train)):
+            thinker_optimizer.zero_grad()
+            consolidator_optimizer.zero_grad()
+            sokoban_env.reset_batch([item["initial_state_tensor"] for item in batch])
+            sokoban_env.render(0)
+            break
+            #  Generate the trayectory autoregressively 
+
+            #  These vectors are used with normalized advantages to train Thinker
+            #  The same vectors are used to generate memory
+            #   Generated memory minimizes the loss of the advanages for fully paralelized predictions
+            #   Since new memory minimizes past regret this should be mathematically sound
+            #pass
+        break
 
 
 
-
+if __name__ == "__main__":
+    main()

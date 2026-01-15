@@ -78,6 +78,7 @@ def main():
     from torch.utils.data import DataLoader
 
     config_total_dataset = {
+        "mode": "supervised",
         "difficulty": "medium",
         "subset_name": "valid",
         "grid_shape_x": 10,
