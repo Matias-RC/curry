@@ -193,7 +193,7 @@ class CausalQueryAttention(nn.Module):
             q_len = k
         else:
             q_len = T
-
+        
         # 5. Attention Calculation
         # q: [B, H, q_len, D]
         # k_vec: [B, H, total_len, D]
