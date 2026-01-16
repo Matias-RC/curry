@@ -10,3 +10,25 @@ Total levels: 2048, Train levels: 1638, Eval levels: 410
 Using GPU for training
 Total levels: 2048, Train levels: 1638, Eval levels: 410
 Using GPU for training
+Metrics saved to s3://rl6-reinforcement-learning-01/behavioral-cloning/exp_00/20260116_170514_91980cb8/metrics.json
+Metrics saved to s3://rl6-reinforcement-learning-01/behavioral-cloning/exp_00/20260116_170514_91980cb8/metrics.json
+Metrics saved to s3://rl6-reinforcement-learning-01/behavioral-cloning/exp_00/20260116_170514_91980cb8/metrics.json
+Metrics saved to s3://rl6-reinforcement-learning-01/behavioral-cloning/exp_00/20260116_170514_91980cb8/metrics.json
+Metrics saved to s3://rl6-reinforcement-learning-01/behavioral-cloning/exp_00/20260116_170514_91980cb8/metrics.json
+Metrics saved to s3://rl6-reinforcement-learning-01/behavioral-cloning/exp_00/20260116_170514_91980cb8/metrics.json
+Metrics saved to s3://rl6-reinforcement-learning-01/behavioral-cloning/exp_00/20260116_170514_91980cb8/metrics.json
+Metrics saved to s3://rl6-reinforcement-learning-01/behavioral-cloning/exp_00/20260116_170514_91980cb8/metrics.json
+Metrics saved to s3://rl6-reinforcement-learning-01/behavioral-cloning/exp_00/20260116_170514_91980cb8/metrics.json
+Metrics saved to s3://rl6-reinforcement-learning-01/behavioral-cloning/exp_00/20260116_170514_91980cb8/metrics.json
+Metrics saved to s3://rl6-reinforcement-learning-01/behavioral-cloning/exp_01/20260116_170514_aef6764c/metrics.json
+Metrics saved to s3://rl6-reinforcement-learning-01/behavioral-cloning/exp_01/20260116_170514_aef6764c/metrics.json
+Metrics saved to s3://rl6-reinforcement-learning-01/behavioral-cloning/exp_01/20260116_170514_aef6764c/metrics.json
+Metrics saved to s3://rl6-reinforcement-learning-01/behavioral-cloning/exp_01/20260116_170514_aef6764c/metrics.json
+Metrics saved to s3://rl6-reinforcement-learning-01/behavioral-cloning/exp_01/20260116_170514_aef6764c/metrics.json
+Metrics saved to s3://rl6-reinforcement-learning-01/behavioral-cloning/exp_01/20260116_170514_aef6764c/metrics.json
+Metrics saved to s3://rl6-reinforcement-learning-01/behavioral-cloning/exp_01/20260116_170514_aef6764c/metrics.json
+Metrics saved to s3://rl6-reinforcement-learning-01/behavioral-cloning/exp_01/20260116_170514_aef6764c/metrics.json
+Metrics saved to s3://rl6-reinforcement-learning-01/behavioral-cloning/exp_01/20260116_170514_aef6764c/metrics.json
+Metrics saved to s3://rl6-reinforcement-learning-01/behavioral-cloning/exp_01/20260116_170514_aef6764c/metrics.json
+Fri Jan 16 05:34:10 PM -03 2026
+Experiment 0 completed

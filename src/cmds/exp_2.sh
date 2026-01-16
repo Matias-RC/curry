@@ -19,7 +19,7 @@ echo "Starting experiment 2"
 
 # Run in parallel on 2 GPUs (GPUT:1 and GPU:2, using CUDA_VISIBLE_DEVICES) train.py --num_supervision_steps 1 and 2
 
-CUDA_VISIBLE_DEVICES=1 python3 train.py \
+CUDA_VISIBLE_DEVICES=3 python3 train.py \
     --num_supervision_steps 1 \
     --batch_size_train 16 \
     --learning_rate 0.0001 \
@@ -34,7 +34,7 @@ CUDA_VISIBLE_DEVICES=1 python3 train.py \
     --subset_name 'train' \
     --verbose 1 &
 
-CUDA_VISIBLE_DEVICES=2 python3 train.py \
+CUDA_VISIBLE_DEVICES=4 python3 train.py \
     --num_supervision_steps 2 \
     --batch_size_train 16 \
     --learning_rate 0.0001 \
@@ -49,7 +49,7 @@ CUDA_VISIBLE_DEVICES=2 python3 train.py \
     --subset_name 'train' \
     --verbose 1 &
 
-CUDA_VISIBLE_DEVICES=3 python3 train.py \
+CUDA_VISIBLE_DEVICES=5 python3 train.py \
     --num_supervision_steps 3 \
     --batch_size_train 16 \
     --learning_rate 0.0001 \
