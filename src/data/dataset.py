@@ -106,6 +106,7 @@ def parse_sokoban_level(level_str: str):
     }   
 
 def play(state, actions_str):
+    is_valid_play = True
     action_map = [(-1,0),(0,1),(1,0),(0,-1)]
     states = [state]
     for action in actions_str:
@@ -116,11 +117,15 @@ def play(state, actions_str):
         dy, dx = action_map[int(action)]
         new_pos_player = (player[0]+dy, player[1]+dx)
         if new_pos_player in walls:
-            continue
+            is_valid_play = False
+            print("hit wall")
+            break
         if new_pos_player in boxes:
             new_pos_box = (new_pos_player[0]+dy, new_pos_player[1]+dx)
             if new_pos_box in boxes:
-                continue
+                is_valid_play = False
+                print("box hit box")
+                break
             boxes.remove(new_pos_player)
             boxes.add(new_pos_box)
 
@@ -128,7 +133,7 @@ def play(state, actions_str):
         state = {"walls": walls, "boxes": boxes, "goals": goals, "player": player}
         states.append(state)
 
-    return states
+    return states, is_valid_play
 
 def symbolic_state_to_tensor(state, grid_shape_x, grid_shape_y, channels):
     num_channels = len(channels)
@@ -201,7 +206,7 @@ class SokobanDataset(Dataset):
             actions_str = row["Actions"]
 
             state_0 = parse_sokoban_level(level)
-            states = play(state_0, actions_str)
+            states, is_valid_play = play(state_0, actions_str) # TODO: @Matias-RC 
 
             states_tensor = [
                 symbolic_state_to_tensor(state, grid_shape_x, grid_shape_y, channels)
