@@ -7,6 +7,9 @@ import numpy as np
 import os
 
 from collections import deque
+import sys
+from pathlib import Path
+
 
 def load_level_by_id(path: str, level_id: str) -> str:
     """
@@ -161,9 +164,9 @@ class SokobanDataset(Dataset):
         max_num_levels = config["max_num_levels"]
         filter_by = config.get("filter_by", "no_filter")
 
-        channels = ['boxes', 'goals', 'player', 'walls']
+        channels = ['walls', 'boxes', 'goals', 'player']
 
-        df = pd.read_csv(f"../../boxoban-astar-solutions/{difficulty}_{subset_name}.csv")
+        df = pd.read_csv(f"../curry/boxoban-astar-solutions/{difficulty}_{subset_name}.csv")
         filtered = df[
             (df["Steps"] != "INCORRECT_SOLUTION_FOUND") &
             (df["Actions"] != "SEARCH_STATE_FAILED")
@@ -192,7 +195,7 @@ class SokobanDataset(Dataset):
             level_id_filled = fill_name(str(int(row["Level"])))
 
             level = load_level_by_id(
-                f"../../boxoban-levels/{difficulty}/{subset_name}/{folder_name}.txt",
+                f"../curry/boxoban-levels/{difficulty}/{subset_name}/{folder_name}.txt",
                 level_id_filled
             )
 
@@ -225,8 +228,10 @@ class SokobanDataset(Dataset):
         grid_shape_y = config["grid_shape_y"]
         max_num_levels = config["max_num_levels"]
         filter_by = config.get("filter_by", "no_filter")
-        channels = ['boxes', 'goals', 'player', 'walls']
-        df = pd.read_csv(f"../../boxoban-astar-solutions/{difficulty}_{subset_name}.csv")
+
+        channels = ['walls', 'boxes', 'goals', 'player']
+
+        df = pd.read_csv(f"../curry/boxoban-astar-solutions/{difficulty}_{subset_name}.csv")
         filtered = df[
             (df["Steps"] != "INCORRECT_SOLUTION_FOUND") &
             (df["Actions"] != "SEARCH_STATE_FAILED")
@@ -249,7 +254,7 @@ class SokobanDataset(Dataset):
             folder_name = fill_name(str(int(row["File"])))
             level_id_filled = fill_name(str(int(row["Level"])))
             level = load_level_by_id(
-                f"../../boxoban-levels/{difficulty}/{subset_name}/{folder_name}.txt",
+                f"../curry/boxoban-levels/{difficulty}/{subset_name}/{folder_name}.txt",
                 level_id_filled
             )
             state = parse_sokoban_level(level)

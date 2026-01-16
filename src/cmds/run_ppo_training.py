@@ -7,7 +7,13 @@ import sys
 from itertools import islice
 import copy
 
-sys.path.append(os.path.abspath("../"))
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]  # A/
+SRC = ROOT / "src"
+
+sys.path.insert(0, str(SRC))
 
 def parser_args():
 
@@ -83,6 +89,7 @@ def main():
         "grid_shape_y": 10,
         "device": device,
         "max_steps_per_play": args.max_steps_per_play,
+        "batch_size": args.batch_size_train,
     }
     sokoban_env = SokobanEnvironment(config_sokoban_env)
 
@@ -183,11 +190,17 @@ def main():
         for batch_idx, batch in enumerate(make_batches(train_dataset.data, args.batch_size_train)):
             thinker_optimizer.zero_grad()
             consolidator_optimizer.zero_grad()
-            sokoban_env.reset_batch([item["initial_state_tensor"] for item in batch])
-            sokoban_env.render(0)
-            break
-            #  Generate the trayectory autoregressively 
+            sokoban_env.load_levels([item["initial_state_tensor"] for item in batch])
+            #  Generate the trayectory autoregressively
+            trajectory_hidden_values = []
+            trajectory_
+            kv_caches = None
 
+            while not sokoban_env.all_levels_done():
+                states_tensors = sokoban_env._get_obs() # shape [B, H, W, C] ((self.batch_size, self.size_y, self.size_x, 4),dtype=torch.float32,device=self.device)
+                visual_latent_states = thinker.visual_encoder(states_tensors.unsqueeze(1))  # shape [B, 1, D]
+                out = thinker.forward(visual_latent_states, "autoregressive", kv_caches)
+                trajectory
             #  These vectors are used with normalized advantages to train Thinker
             #  The same vectors are used to generate memory
             #   Generated memory minimizes the loss of the advanages for fully paralelized predictions

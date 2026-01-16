@@ -81,10 +81,10 @@ class ActionDecoder(nn.Module):
 
         self.lm_head = nn.Linear(hidden_size, vocab_size)
 
-    def forward(self, x):
-        latent_states = x["latent_states"]  # (B, T, D)
+    def forward(self, x, mode="parallelized", kv_cache=None):
+        latent_states = x["latent_states"]  # (B, T, D)  or (B ,1 ,D) in autoregressive mode
     
-        if self.model_name == "qwen2":
+        if self.model_name == "qwen2" and mode == "parallelized":
             h = latent_states
     
             for _ in range(self.num_think_steps):
@@ -98,7 +98,23 @@ class ActionDecoder(nn.Module):
             return {
                 "logits": logits,
             }
-    
+        elif self.model_name == "qwen2" and mode == "autoregressive":
+            h = latent_states
+            for _ in range(self.num_think_steps):
+                outputs = self.backbone(
+                    inputs_embeds=h,
+                    past_key_values=kv_cache,
+                )
+                h_new = outputs.last_hidden_state
+                h = h + h_new
+
+            kv_cache = outputs.past_key_values
+            logits = self.lm_head(h)
+            return {
+                "hidden_states": h,
+                "logits": logits,
+                "kv_cache": kv_cache,
+            }
         else:
             raise ValueError(f"Unknown model name: {self.model_name}")
 

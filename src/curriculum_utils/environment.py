@@ -52,7 +52,7 @@ class SokobanEnvironment:
         self.action_map = [(-1, 0), (1, 0), (0, -1), (0, 1)]  # UP, DOWN, LEFT, RIGHT
 
         self.max_steps = config["max_steps_per_play"]
-        self.batch_size = getattr(config, 'batch_size', 1)
+        self.batch_size = config['batch_size']
 
         # Use device from config if available, otherwise default to CPU
         self.device = config["device"]
@@ -80,8 +80,6 @@ class SokobanEnvironment:
         self.walls = [set() for _ in range(self.batch_size)]
         self.steps_left = [self.max_steps for _ in range(self.batch_size)]
         self.done = [False for _ in range(self.batch_size)]
-
-        return self._get_obs()
 
     def load_levels(self, level_strings) -> torch.Tensor:
         """
@@ -115,7 +113,7 @@ class SokobanEnvironment:
                 state[key] = set(
                     (int(i), int(j)) for i, j in idx
                 )
-
+        
         return state
 
 
@@ -126,7 +124,13 @@ class SokobanEnvironment:
         self.goals[batch_idx].clear()
 
         # Parse level - assuming all levels are same size as grid_size
-        self.walls[batch_idx], self.boxes[batch_idx], self.goals[batch_idx], self.player_pos[batch_idx] = self.tensor_to_symbolic_state(level)
+        # self.walls[batch_idx], self.boxes[batch_idx], self.goals[batch_idx], self.player_pos[batch_idx]
+        state = self.tensor_to_symbolic_state(level)
+        self.walls[batch_idx] = state["walls"]
+        self.boxes[batch_idx] = state["boxes"]
+        self.goals[batch_idx] = state["goals"]
+        self.player_pos[batch_idx] = state["player"]
+
 
         self.done[batch_idx] = False
         self.steps_left[batch_idx] = self.max_steps
@@ -266,7 +270,7 @@ class SokobanEnvironment:
     
     def _get_obs(self) -> torch.Tensor:
         obs = torch.zeros(
-            (self.batch_size, 4, self.size_y, self.size_x),
+            (self.batch_size, self.size_y, self.size_x, 4),
             dtype=torch.float32,
             device=self.device
         )
@@ -276,7 +280,7 @@ class SokobanEnvironment:
             if self.done[i]:
                 continue
 
-            obs[i] = self.symbolic_state_to_tensor({"walls": self.walls[i], "player":self.player_pos[i], "goals":self.goals[i], "boxes":self.boxes[i]})
+            obs[i] = self.symbolic_state_to_tensor({"walls": self.walls[i], "boxes":self.boxes[i], "goals":self.goals[i], "player":self.player_pos[i]})
         return obs
 
     def render(self, batch_idx: int = 0) -> str:
@@ -315,6 +319,10 @@ class SokobanEnvironment:
             grid[py][px] = '@'
 
         return '\n'.join(''.join(row) for row in grid)
+    
+    def all_levels_done(self) -> bool:
+        """Check if all levels in the batch are done."""
+        return all(self.done)
 
     @staticmethod
     def make_config(config_dic):
