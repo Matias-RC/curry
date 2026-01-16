@@ -187,14 +187,11 @@ class SokobanDataset(Dataset):
             filtered = filtered.sort_values("Steps", ascending=False)
         # else: no_filter → keep CSV order
 
-        # Truncate to max_num_levels (no randomness)
-        if max_num_levels is not None:
-            filtered = filtered.iloc[:max_num_levels]
-
         data = []
-
-        tqdm_levels = tqdm(filtered.iterrows(), total=len(filtered), desc="Loading dataset")
-        for _, row in tqdm_levels:
+        count_levels = 0
+        ix = 0
+        while (count_levels < max_num_levels) and (ix < len(filtered)):
+            row = filtered.iloc[ix]
             folder_name = fill_name(str(int(row["File"])))
             level_id_filled = fill_name(str(int(row["Level"])))
 
@@ -208,20 +205,25 @@ class SokobanDataset(Dataset):
             state_0 = parse_sokoban_level(level)
             states, is_valid_play = play(state_0, actions_str) # TODO: @Matias-RC 
 
-            states_tensor = [
-                symbolic_state_to_tensor(state, grid_shape_x, grid_shape_y, channels)
-                for state in states[:-1]
-            ]
-            states_tensor = torch.stack(states_tensor, dim=0)
+            if is_valid_play:
+                states_tensor = [
+                    symbolic_state_to_tensor(state, grid_shape_x, grid_shape_y, channels)
+                    for state in states[:-1]
+                ]
+                states_tensor = torch.stack(states_tensor, dim=0)
 
-            actions_id = torch.tensor([int(a) for a in actions_str], dtype=torch.long)
+                actions_id = torch.tensor([int(a) for a in actions_str], dtype=torch.long)
 
-            data.append({
-                "states_tensor": states_tensor,
-                "actions_id": actions_id,
-            })
+                data.append({
+                    "states_tensor": states_tensor,
+                    "actions_id": actions_id,
+                })
+                count_levels += 1
+                
+            ix += 1
 
         return data
+    
     def load_data_for_ppo(self, config):
         """
         Main load data works for supervised learning. This: for PPO training.
