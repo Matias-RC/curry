@@ -26,7 +26,7 @@ CUDA_VISIBLE_DEVICES=3 python3 train.py \
     --num_epochs 100 \
     --where_to_save s3://rl6-reinforcement-learning-01 \
     --output_dir behavioral-cloning/exp_20 \
-    --metrics_save_epoch_rate 10 \
+    --metrics_save_epoch_rate 5 \
     --max_num_levels 16384 \
     --train_fraction 0.9 \
     --filter_by 'shortest_first' \
@@ -41,7 +41,7 @@ CUDA_VISIBLE_DEVICES=4 python3 train.py \
     --num_epochs 100 \
     --where_to_save s3://rl6-reinforcement-learning-01 \
     --output_dir behavioral-cloning/exp_21 \
-    --metrics_save_epoch_rate 10 \
+    --metrics_save_epoch_rate 5 \
     --max_num_levels 16384 \
     --train_fraction 0.9 \
     --filter_by 'shortest_first' \
@@ -56,7 +56,7 @@ CUDA_VISIBLE_DEVICES=5 python3 train.py \
     --num_epochs 100 \
     --where_to_save s3://rl6-reinforcement-learning-01 \
     --output_dir behavioral-cloning/exp_22 \
-    --metrics_save_epoch_rate 10 \
+    --metrics_save_epoch_rate 5 \
     --max_num_levels 16384 \
     --train_fraction 0.9 \
     --filter_by 'shortest_first' \
