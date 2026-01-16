@@ -220,6 +220,9 @@ class SokobanDataset(Dataset):
                 })
                 count_levels += 1
                 
+            else:
+                print(f"Skipping level {level_id_filled} in folder {folder_name} due to invalid playthrough.")
+
             ix += 1
 
         return data
