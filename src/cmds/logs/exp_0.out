@@ -1,0 +1,12 @@
+/home/furrutia/curry/src/cmds
+Fri Jan 16 05:05:10 PM -03 2026
+scylla
+Starting experiment 0
+Training with args: Namespace(seed=42, batch_size_train=8, num_epochs=100, learning_rate=0.0001, max_num_levels=2048, train_fraction=0.8, difficulty='medium', subset_name='valid', num_think_steps=2, filter_by='no_filter', num_supervision_steps=2, where_to_save='s3://rl6-reinforcement-learning-01', output_dir='behavioral-cloning/exp_01', metrics_save_epoch_rate=10, verbose=1)
+Experiment args saved to s3://rl6-reinforcement-learning-01/behavioral-cloning/exp_01/20260116_170514_aef6764c/args.json
+Training with args: Namespace(seed=42, batch_size_train=8, num_epochs=100, learning_rate=0.0001, max_num_levels=2048, train_fraction=0.8, difficulty='medium', subset_name='valid', num_think_steps=2, filter_by='no_filter', num_supervision_steps=1, where_to_save='s3://rl6-reinforcement-learning-01', output_dir='behavioral-cloning/exp_00', metrics_save_epoch_rate=10, verbose=1)
+Experiment args saved to s3://rl6-reinforcement-learning-01/behavioral-cloning/exp_00/20260116_170514_91980cb8/args.json
+Total levels: 2048, Train levels: 1638, Eval levels: 410
+Using GPU for training
+Total levels: 2048, Train levels: 1638, Eval levels: 410
+Using GPU for training

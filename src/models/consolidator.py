@@ -60,12 +60,37 @@ class TwoTowerEncoder(nn.Module):
 class Consolidator(nn.Module):
     def __init__(self, config):
         super().__init__()
-        config_two_tower = config["config_two_tower"]
-        self.backbone = TwoTowerEncoder(config_two_tower)
+        self.model_name = config["model_name"]
+        args = config["args"]
+        if self.model_name == "t5":
+            from transformers import T5Model, T5Config
+            args_model = {
+                "num_layers": args["num_encoder_layers"],
+                "num_decoder_layers": args["num_decoder_layers"],
+                "d_model": args["hidden_size"],
+                "num_heads": args["num_attention_heads"],
+                "d_ff": args["hidden_size"] * 4,
+            }
+            config_model =  T5Config(**args_model)
+            self.backbone = T5Model(config_model)
+
+        else:
+            config_two_tower = config["config_two_tower"]
+            self.backbone = TwoTowerEncoder(config_two_tower)
 
 
     def forward(self, x):
-        return self.backbone(x)
+        if self.model_name == "two_tower":
+            return self.backbone(x)
+        
+        elif self.model_name == "t5":
+
+            out = self.backbone(
+                inputs_embeds=x["thinking_stream"],
+                decoder_inputs_embeds=x["memory_states"],
+            ).last_hidden_state
+            
+            return out
     
 
 if __name__ == "__main__":

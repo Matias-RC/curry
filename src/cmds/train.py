@@ -1,9 +1,18 @@
 from argparse import ArgumentParser
 import random
+import uuid
 import numpy as np
 import torch
 import os
 import sys
+import torch.nn as nn
+from datetime import datetime
+import boto3
+import json
+import os
+import tempfile
+from tqdm import tqdm
+
 sys.path.append(os.path.abspath("../"))
 
 def parser_args():
@@ -20,12 +29,26 @@ def parser_args():
 
     # Dataset arguments
     parser.add_argument("--max_num_levels", type=int, default=2048, help="Maximum number of levels to use from the dataset")
-
+    parser.add_argument("--train_fraction", type=float, default=0.8, help="Fraction of data to use for training")
+    parser.add_argument("--difficulty", type=str, default="medium", help="Difficulty level of the Sokoban levels: easy, medium, hard")
+    parser.add_argument("--subset_name", type=str, default="valid", help="Subset name of the dataset to use")
+    
     # Thinker arguments
     parser.add_argument("--num_think_steps", type=int, default=2, help="Number of thinking steps")
 
     # Curriculum arguments
     parser.add_argument("--filter_by", type=str,default="no_filter" ,help="Options: shortest_first, longest_first, no_filter")
+
+    # MAPLE arguments
+    parser.add_argument("--num_supervision_steps", type=int, default=5, help="Number of supervision steps in MAPLE")
+    
+    # Output arguments
+    parser.add_argument("--where_to_save", type=str, default="s3://rl6-reinforcement-learning-01", help="Where to save outputs: local or s3")
+    parser.add_argument("--output_dir", type=str, default="behavioral-cloning", help="Directory to save outputs")
+    parser.add_argument("--metrics_save_epoch_rate", type=int, default=5, help="Interval (in epochs) to save metrics")
+
+    # Log arguments
+    parser.add_argument("--verbose", type=int, default=1, help="If set, print training logs")
 
     return parser.parse_args()
 
@@ -66,21 +89,84 @@ def model_eval(model, eval_loader, loss_fn):
     model.train()
     return eval_loss, acc_loss
 
+def create_experiment(args, verbose=True): # Get experiment name from date and time. Also save args in json file.
+
+    # Create experiment name based on date and time
+    now = datetime.now()
+    exp_name = now.strftime("%Y%m%d_%H%M%S")
+    exp_name += f"_{uuid.uuid4().hex[:8]}"  # Add random suffix to avoid overwriting
+
+    # Save args to json file (s3 or local
+    if args.where_to_save.startswith("s3://"):
+        s3 = boto3.client('s3')
+        bucket_name = args.where_to_save.replace("s3://", "")
+        args_path = os.path.join(args.output_dir, exp_name, "args.json")
+        # Save args to a temporary local file then upload to s3, and remove the local file. Use tempfile module
+        with tempfile.NamedTemporaryFile(mode='w+', delete=False) as tmpfile:
+            json.dump(vars(args), tmpfile)
+            tmpfile_path = tmpfile.name
+
+        s3_key = args_path
+        s3.upload_file(tmpfile_path, bucket_name, s3_key)
+        if verbose:
+            print(f"Experiment args saved to s3://{bucket_name}/{s3_key}")
+        os.remove(tmpfile_path)
+
+        return {
+            "output_dir": args.output_dir,
+            "exp_name": exp_name,
+            "s3_client": s3,
+            "bucket_name": bucket_name,
+        }
+    
+    else:
+        # TODO: Local saving
+        return {
+            "exp_name": exp_name,
+        }
+
+
+# save_metrics(args.where_to_save, args.output_dir, metrics_per_epoch, epoch + 1):
+def save_metrics(experiment_details, metrics_dict, epoch=None, verbose=True): # If overwrite, then replace existing file. If epoch=None then save as metrics.json
+
+    metrics_filename = f"{epoch}.json" if epoch != None else "metrics.json"
+    metrics_path = os.path.join(experiment_details["exp_name"], metrics_filename)
+
+    if "s3_client" in experiment_details:
+        with tempfile.NamedTemporaryFile(mode='w+', delete=False) as tmpfile:
+            json.dump(metrics_dict, tmpfile)
+            tmpfile_path = tmpfile.name
+
+        s3 = experiment_details["s3_client"]
+        bucket_name = experiment_details["bucket_name"]
+        s3_key = os.path.join(experiment_details["output_dir"], experiment_details["exp_name"], metrics_filename)
+        s3.upload_file(tmpfile_path, bucket_name, s3_key)
+        if verbose:
+            print(f"Metrics saved to s3://{bucket_name}/{s3_key}")
+
+        os.remove(tmpfile_path)
+
+    else:
+        if verbose:
+            print(f"Metrics saved locally to {metrics_path}")
+
+
 def main():
     args = parser_args()
     print("Training with args:", args)
 
+    experiment_details = create_experiment(args)
+
     seed = args.seed
     set_seed_for_reproducibility(seed)
-
 
     from data.dataset import SokobanDataset, collate_fn
     from torch.utils.data import DataLoader
 
     config_total_dataset = {
         "mode": "supervised",
-        "difficulty": "medium",
-        "subset_name": "valid",
+        "difficulty": args.difficulty,
+        "subset_name": args.subset_name,
         "grid_shape_x": 10,
         "grid_shape_y": 10,
         "max_num_levels": args.max_num_levels,
@@ -89,7 +175,7 @@ def main():
     total_dataset = SokobanDataset(config_total_dataset)
 
     # Train/Val fraction
-    train_fraction = 0.8
+    train_fraction = args.train_fraction
     num_total_levels = len(total_dataset)
     num_train_levels = int(train_fraction * num_total_levels)
     num_eval_levels = num_total_levels - num_train_levels
@@ -106,33 +192,79 @@ def main():
     eval_loader = DataLoader(eval_dataset, batch_size=batch_size_eval, shuffle=False, collate_fn=collate_fn)
 
     from models.thinker import Thinker
+    from models.consolidator import Consolidator
 
-    visual_encoder_config = {
-        "in_channels": 4,
-        "latent_dim": 64,
-        "grid_shape_x": 10,
-        "grid_shape_y": 10,
-        "channels": [16, 32, 64],   # out channels for each conv layer
-        "kernel_size": 3,
-        "padding": 1,
-        "stride": 2,                # applied only to last conv
-    }
-    action_decoder_config = {
-        "model_name": "qwen2",
-        "args": {
-            "num_layers": 2,
-            "hidden_size": 64,
-            "num_attention_heads": 4,
-        },
-        "hidden_size": 64,
-        "vocab_size": 4,
-        "num_think_steps": args.num_think_steps,
-    }
     model_config = {
-        "config_visual_encoder": visual_encoder_config,
-        "config_action_decoder": action_decoder_config,
+        "thinker_config": {
+            "config_visual_encoder": {
+                "in_channels": 4,
+                "latent_dim": 64,
+                "grid_shape_x": 10,
+                "grid_shape_y": 10,
+                "channels": [16, 32, 64],   # out channels for each conv layer
+                "kernel_size": 3,
+                "padding": 1,
+                "stride": 2,                # applied only to last conv
+            },
+            "config_action_decoder": {
+                "model_name": "qwen2",
+                "args": {
+                    "num_layers": 2,
+                    "hidden_size": 64,
+                    "num_attention_heads": 4,
+                },
+                "hidden_size": 64,
+                "vocab_size": 4,
+                "num_think_steps": args.num_think_steps,
+            },
+        },
+        "consolidator_config": {
+            "model_name": "t5",
+            "args": {
+                "num_encoder_layers": 1,
+                "num_decoder_layers": 1,
+                "hidden_size": 64,
+                "num_attention_heads": 2,
+            }
+        },
+        "memory_config": {
+            "hidden_size": 64,
+            "memory_size": 2,
+        },
+        "num_supervision_steps": args.num_supervision_steps,
     }
-    model = Thinker(model_config)
+
+    class MAPLE(nn.Module):
+        def __init__(self, config):
+            super().__init__()
+
+            thinker_config = config["thinker_config"]
+            self.thinker = Thinker(thinker_config)
+            consolidator_config = config["consolidator_config"]
+            self.consolidator = Consolidator(consolidator_config)
+
+            # Memory as nn.Parameter
+            memory_config = config["memory_config"]
+            self.memory = nn.Parameter(torch.randn(memory_config["memory_size"], memory_config["hidden_size"]))
+
+            # Supervision
+            self.num_supervision_steps = config["num_supervision_steps"] 
+            
+        def forward(self, batch):
+
+            B = batch["states_tensors"].size(0)
+            
+            memory_states = self.memory.unsqueeze(0).expand(B, -1, -1)  # shape [B, memory_size, hidden_size]
+            for _ in range(self.num_supervision_steps):
+                thinker_output = self.thinker(batch, memory_states)
+                memory_states = self.consolidator({
+                    "memory_states": memory_states,
+                    "thinking_stream": thinker_output["decoder_output"]["last_hidden_state"],
+                })
+            
+            return thinker_output
+    
+    model = MAPLE(model_config)
     model.train()
 
     if torch.cuda.is_available():
@@ -144,12 +276,23 @@ def main():
     # Optimzer
     learning_rate = args.learning_rate
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
-    loss_fn = torch.nn.CrossEntropyLoss(ignore_index=-100)
+    loss_fn = torch.nn.CrossEntropyLoss(ignore_index=-100, reduction="mean")
+
+    metrics_per_epoch = {}
 
     num_epochs = args.num_epochs
-    for epoch in range(num_epochs):
-        
-        for batch_idx, batch in enumerate(train_loader):
+    tqdm_epochs = tqdm(
+        range(num_epochs),
+        desc="Training Epochs",
+        unit="epoch",
+        disable=(args.verbose == 0)
+    )
+    for epoch in tqdm_epochs:
+
+        total_loss = 0.0
+        total_count = 0
+
+        for _, batch in enumerate(train_loader):
             optimizer.zero_grad()
             batch = {k: v.to("cuda") if torch.cuda.is_available() else v for k, v in batch.items()}
 
@@ -161,14 +304,29 @@ def main():
             B, T, num_actions = logits.shape
             loss = loss_fn(logits.view(B * T, num_actions), actions_ids.view(B * T))
 
+            total_loss += loss.item() * B
+            total_count += B
+
             loss.backward()
             optimizer.step()
-
-            if batch_idx % 10 == 0:
-                print(f"Epoch [{epoch+1}/{num_epochs}], Batch [{batch_idx+1}/{len(train_loader)}], Loss: {loss.item():.4f}")
-
+        
+        train_loss = total_loss / total_count
         eval_loss, eval_acc = model_eval(model, eval_loader, loss_fn)
-        print(f"Epoch [{epoch+1}/{num_epochs}], Eval Loss: {eval_loss:.4f}, Eval Acc: {eval_acc:.4f}")
+        metrics_per_epoch[epoch] = {
+            "train_loss": train_loss,
+            "eval_loss": eval_loss,
+            "eval_acc": eval_acc,
+        }
+        if args.verbose == 1: # Print using tqdm
+            tqdm_epochs.set_postfix({
+                "Eval Loss": f"{eval_loss:.4f}",
+                "Eval Acc": f"{eval_acc:.4f}",
+                "Train Loss": f"{train_loss:.4f}",
+            })
+        # Save metric every 10 epochs in the s3 (args.where_to_save)
+        if (epoch + 1) % args.metrics_save_epoch_rate == 0:
+            save_metrics(experiment_details, metrics_per_epoch, None, verbose=(args.verbose == 1))
+            
 
 if __name__ == "__main__":
     main()
