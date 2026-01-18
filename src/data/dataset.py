@@ -148,12 +148,10 @@ def symbolic_state_to_tensor(state, grid_shape_x, grid_shape_y, channels):
 
 class SokobanDataset(Dataset):
     def __init__(self, config):
+
         self.config = config
-        assert config["mode"] in ["supervised", "ppo"], "mode must be either 'supervised' or 'ppo'"
-        if config["mode"] == "supervised":
-            self.data = self.load_data(config)
-        else:
-            self.data = self.load_data_for_ppo(config)
+        self.data = self.load_data(config)
+
 
     def load_data(self, config):
 
@@ -203,7 +201,7 @@ class SokobanDataset(Dataset):
             actions_str = row["Actions"]
 
             state_0 = parse_sokoban_level(level)
-            states, is_valid_play = play(state_0, actions_str) # TODO: @Matias-RC 
+            states, is_valid_play = play(state_0, actions_str) 
 
             if is_valid_play:
                 states_tensor = [
@@ -227,58 +225,6 @@ class SokobanDataset(Dataset):
 
         return data
     
-    def load_data_for_ppo(self, config):
-        """
-        Main load data works for supervised learning. This: for PPO training.
-        """
-        difficulty = config["difficulty"]
-        subset_name = config["subset_name"]
-        grid_shape_x = config["grid_shape_x"]
-        grid_shape_y = config["grid_shape_y"]
-        max_num_levels = config["max_num_levels"]
-        filter_by = config.get("filter_by", "no_filter")
-        channels = ['boxes', 'goals', 'player', 'walls']
-
-        df = pd.read_csv(f"../../boxoban-astar-solutions/{difficulty}_{subset_name}.csv")
-
-        filtered = df[
-            (df["Steps"] != "INCORRECT_SOLUTION_FOUND") &
-            (df["Actions"] != "SEARCH_STATE_FAILED") & 
-            (df["Actions"] != "NOT_FOUND") &
-            (df["Steps"] != -1)
-        ].copy()
-        
-        # Convert Steps to numeric
-        filtered["Steps"] = pd.to_numeric(filtered["Steps"], errors="coerce")
-        filtered = filtered.dropna(subset=["Steps"])
-        # Sort deterministically
-        if filter_by == "shortest_first":
-            filtered = filtered.sort_values("Steps", ascending=True)
-        elif filter_by == "longest_first":
-            filtered = filtered.sort_values("Steps", ascending=False)
-        # Truncate to max_num_levels (no randomness)
-        if max_num_levels is not None:
-            filtered = filtered.iloc[:max_num_levels]
-        data = []
-        tqdm_levels = tqdm(filtered.iterrows(), total=len(filtered), desc="Loading dataset for PPO")
-        for _, row in tqdm_levels:
-            folder_name = fill_name(str(int(row["File"])))
-            level_id_filled = fill_name(str(int(row["Level"])))
-            level = load_level_by_id(
-                f"../../boxoban-levels/{difficulty}/{subset_name}/{folder_name}.txt",
-                level_id_filled
-            )
-            state = parse_sokoban_level(level)
-            tensor = symbolic_state_to_tensor(state, grid_shape_x, grid_shape_y, channels)
-            data.append({
-                "initial_state_tensor": tensor,
-                "level_id": level_id_filled,
-                "folder_name": folder_name,
-            })
-        return data
-    def shuffle_pool(self):
-        np.random.shuffle(self.data)
-
 
     def __len__(self):
         return len(self.data)
