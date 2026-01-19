@@ -184,7 +184,7 @@ if __name__ == "__main__":
         },
         "hidden_size": 32,
         "vocab_size": 4,
-        "num_think_steps":1
+        "num_think_steps": 1
     }
 
     action_decoder = ActionDecoder(config_action_decoder)

@@ -41,7 +41,8 @@ def parser_args():
 
     # MAPLE arguments
     parser.add_argument("--num_supervision_steps", type=int, default=5, help="Number of supervision steps in MAPLE")
-    
+    parser.add_argument("--memory_size", type=int, default=2, help="Size of the memory in MAPLE")
+
     # Output arguments
     parser.add_argument("--where_to_save", type=str, default="s3://rl6-reinforcement-learning-01", help="Where to save outputs: local or s3")
     parser.add_argument("--output_dir", type=str, default="behavioral-cloning/test", help="Directory to save outputs")
@@ -279,7 +280,7 @@ def main():
         },
         "memory_config": {
             "hidden_size": 64,
-            "memory_size": 2,
+            "memory_size": args.memory_size,
         },
         "num_supervision_steps": args.num_supervision_steps,
         "env": sokoban_env,
