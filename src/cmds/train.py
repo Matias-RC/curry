@@ -40,7 +40,9 @@ def parser_args():
     parser.add_argument("--num_think_steps", type=int, default=2, help="Number of thinking steps")
 
     # MAPLE arguments
-    parser.add_argument("--num_supervision_steps", type=int, default=5, help="Number of supervision steps in MAPLE")
+    parser.add_argument("--num_supervision_steps_train", type=int, default=2, help="Number of supervision steps in MAPLE during training")
+    parser.add_argument("--num_supervision_steps_eval", type=int, default=5, help="Number of supervision steps in MAPLE during evaluation")
+
     parser.add_argument("--memory_size", type=int, default=2, help="Size of the memory in MAPLE")
 
     # Output arguments
@@ -94,15 +96,15 @@ def model_bc_eval(model, eval_loader, loss_fn):
     model.train()
     return eval_loss, eval_acc
 
-def model_gen_eval(model, eval_loader, max_solution_length=100):
+def model_gen_eval(model, eval_loader, max_solution_length=100, num_supervision_steps=2):
    
     model.eval()
-    eval_acc = {step: 0.0 for step in range(model.num_supervision_steps)}
+    eval_acc = {step: 0.0 for step in range(num_supervision_steps)}
     with torch.no_grad():
         for batch in eval_loader:
-            output = model.generate(batch, max_solution_length)
+            output = model.generate(batch, max_solution_length, num_supervision_steps)
             states_0 = [model.env.parse_sokoban_level(level) for level in batch["level_strs"]] 
-            for step in range(model.num_supervision_steps):
+            for step in range(num_supervision_steps):
                 decoder_output = output[step]["decoder_output"]  # shape [B, T, num_actions]
                 logits = decoder_output["logits"]
                 preds = logits.argmax(dim=-1)
@@ -282,7 +284,7 @@ def main():
             "hidden_size": 64,
             "memory_size": args.memory_size,
         },
-        "num_supervision_steps": args.num_supervision_steps,
+        "num_supervision_steps": args.num_supervision_steps_train,
         "env": sokoban_env,
     }
     model = MAPLE(model_config)
@@ -341,7 +343,7 @@ def main():
         
         train_loss = total_loss / total_count
         bc_eval_loss, bc_eval_acc = model_bc_eval(model, eval_loader, loss_fn)
-        gen_eval_acc = model_gen_eval(model, eval_loader, max_solution_length=100)
+        gen_eval_acc = model_gen_eval(model, eval_loader, max_solution_length=100, num_supervision_steps=args.num_supervision_steps_eval)
 
         metrics_per_epoch[epoch] = {
             "train_loss": train_loss,
@@ -352,7 +354,7 @@ def main():
             tqdm_epochs.set_postfix({
                 "Eval Loss": {step: f"{bc_eval_loss[step]:.4f}" for step in bc_eval_loss},
                 "Eval (BC) Acc": {step: f"{bc_eval_acc[step]:.4f}" for step in bc_eval_acc},
-                "Eval (Gen) Acc": {step: f"{gen_eval_acc[step]:.4f}" for step in gen_eval_acc},
+                "Eval (Gen) Acc": {step: f"{gen_eval_acc[step]:.0f}" for step in gen_eval_acc},
                 "Train Loss": f"{train_loss:.4f}",
             })
         # Save metric every 10 epochs in the s3 (args.where_to_save)
