@@ -37,6 +37,7 @@ class Consolidator(nn.Module):
 
             out = self.backbone(
                 inputs_embeds=x["thinking_stream"],
+                attention_mask=x["thinking_stream_attention_mask"],
                 decoder_inputs_embeds=x["memory_states"],
             ).last_hidden_state
             

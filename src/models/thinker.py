@@ -129,7 +129,8 @@ class Thinker(nn.Module):
         decoder_output = self.action_decoder(x)  # shape [B, T, num_actions]
 
         return {
-            "decoder_output": decoder_output
+            "decoder_output": decoder_output,
+            "attention_mask": batch["attention_mask"],
         }
 
 

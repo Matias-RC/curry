@@ -279,6 +279,7 @@ def main():
                 memory_states = self.consolidator({
                     "memory_states": memory_states,
                     "thinking_stream": thinker_output["decoder_output"]["last_hidden_state"],
+                    "thinking_stream_attention_mask": thinker_output["attention_mask"],
                 })
                 thinker_outputs.append(thinker_output)
             return thinker_outputs
