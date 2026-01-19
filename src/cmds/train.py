@@ -94,6 +94,7 @@ def model_bc_eval(model, eval_loader, loss_fn):
     return eval_loss, eval_acc
 
 def model_gen_eval(model, eval_loader, max_solution_length=100):
+   
     model.eval()
     eval_acc = {step: 0.0 for step in range(model.num_supervision_steps)}
     with torch.no_grad():
@@ -107,12 +108,13 @@ def model_gen_eval(model, eval_loader, max_solution_length=100):
                 for b in range(len(states_0)):
                     state_0 = states_0[b]
                     actions_str = "".join([str(a.item()) for a in preds[b]])
-                    _, status = model.env.play(state_0, actions_str)
+                    _, status = model.env.play(state_0, actions_str, early_stop=True)
                     if status == "solved":
                         eval_acc[step] += 1.0
             
-    eval_acc  = {step: eval_acc[step] / len(eval_loader.dataset) for step in eval_acc}
+    eval_acc  = {step: eval_acc[step]  for step in eval_acc}
     model.train()
+
     return eval_acc
 
 def create_experiment(args, verbose=True): # Get experiment name from date and time. Also save args in json file.

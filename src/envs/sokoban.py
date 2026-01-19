@@ -107,7 +107,7 @@ class SokobanEnv:
 
         return new_state, status
     
-    def play(self, state, actions_str):
+    def play(self, state, actions_str, early_stop=False):
         states = [state]
         if len(actions_str) == 0:
             return states, "no actions"
@@ -116,6 +116,8 @@ class SokobanEnv:
                 state, status = self.step(state, action_str)
                 if status in ["solved", "in progress"]:
                     states.append(state)
+                    if early_stop and status == "solved":
+                        break
                 else: break
 
         return states, status
@@ -136,6 +138,7 @@ class SokobanEnv:
     def step_batch(self, batch, policies): #current_status = ["in progress"] * B
 
         states = batch["states"]
+        device = batch["states_tensors"].device
         B = len(states)
         
         grid_shape_x = batch["states_tensors"].size(-3) # B, T, H, W, C
@@ -151,7 +154,7 @@ class SokobanEnv:
             action_str = str(a.item())
             if batch["attention_mask"][b, -1] == 0:
                 new_states.append(state)
-                new_states_tensor.append(torch.zeros_like(batch["states_tensors"][b, :1]))
+                new_states_tensor.append(torch.zeros_like(batch["states_tensors"][b, :1]).to(device))
                 new_attention_mask.append([0])
             else:
                 new_state, status = self.step(state, action_str)
@@ -160,11 +163,11 @@ class SokobanEnv:
                 else:
                     new_state_tensor = torch.zeros_like(batch["states_tensors"][b, :1]) 
                 new_states.append(new_state)
-                new_states_tensor.append(new_state_tensor)
+                new_states_tensor.append(new_state_tensor.to(device))
                 new_attention_mask.append([1] if status == "in progress" else [0])
 
         batch["states"] = new_states
-        new_attention_mask = torch.tensor(new_attention_mask)
+        new_attention_mask = torch.tensor(new_attention_mask).to(device)
         new_states_tensor = torch.stack(new_states_tensor, dim=0)
         
         return new_states_tensor, new_attention_mask

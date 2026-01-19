@@ -133,7 +133,6 @@ class Thinker(nn.Module):
             "attention_mask": batch["attention_mask"],
         }
     
-    @torch.no_grad()
     def generate(self, env, dynamic_batch, memory_states=None, max_solution_length=50):
         
         for _ in range(max_solution_length):
