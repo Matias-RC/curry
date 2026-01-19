@@ -304,6 +304,10 @@ def main():
     device = next(model.parameters()).device
     model.device = device
 
+    # Print model size #params
+    num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"Model size: {num_params/1e6:.2f} Million parameters")
+
     # Optimizer
     learning_rate = args.learning_rate
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
