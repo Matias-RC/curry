@@ -193,14 +193,14 @@ def main():
             sokoban_env.load_levels([item["initial_state_tensor"] for item in batch])
             #  Generate the trayectory autoregressively
             trajectory_hidden_values = []
-            trajectory_
+            trajectory_ =None
             kv_caches = None
 
             while not sokoban_env.all_levels_done():
                 states_tensors = sokoban_env._get_obs() # shape [B, H, W, C] ((self.batch_size, self.size_y, self.size_x, 4),dtype=torch.float32,device=self.device)
                 visual_latent_states = thinker.visual_encoder(states_tensors.unsqueeze(1))  # shape [B, 1, D]
                 out = thinker.forward(visual_latent_states, "autoregressive", kv_caches)
-                trajectory
+                trajectory = None
             #  These vectors are used with normalized advantages to train Thinker
             #  The same vectors are used to generate memory
             #   Generated memory minimizes the loss of the advanages for fully paralelized predictions
