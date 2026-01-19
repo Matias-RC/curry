@@ -43,10 +43,12 @@ class MAPLE(nn.Module):
     def generate(self, batch, max_solution_length=50):
 
         dynamic_batch = self.env.get_dynamic_batch(batch["level_strs"])
+        dynamic_batch = {k: v.to(self.memory.device) if isinstance(v, torch.Tensor) else v for k, v in dynamic_batch.items()}
 
-        memory_states = self.memory.unsqueeze(0).expand(len(dynamic_batch["states"]), -1, -1)  # shape [B, memory_size, hidden_size]
+        memory_states = self.memory.unsqueeze(0).expand(len(dynamic_batch["states_0"]), -1, -1)  # shape [B, memory_size, hidden_size]
         thinker_outputs = []
         for _ in range(self.num_supervision_steps):
+            dynamic_batch["states"] = dynamic_batch["states_0"].copy()
             thinker_output = self.thinker.generate(self.env, dynamic_batch, memory_states, max_solution_length)
             memory_states = self.consolidator({
                 "memory_states": memory_states,

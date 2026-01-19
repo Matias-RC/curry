@@ -143,7 +143,7 @@ class Thinker(nn.Module):
             logits = thinker_output["decoder_output"]["logits"]
             policies = F.softmax(logits, dim=-1)
 
-            new_states_tensor, new_attention_mask = env.step_batch(dynamic_batch, policies)
+            new_states_tensor, new_attention_mask = env.step_batch(dynamic_batch, policies[:, -1, :])
             
             if new_attention_mask.max() == 1: # Attention mask indicates at least one active environment
 

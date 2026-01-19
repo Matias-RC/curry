@@ -147,7 +147,7 @@ class SokobanEnv:
         new_states_tensor = []
         new_attention_mask = []
         for b, a in zip(range(B), actions):
-            state = batch["states"][b]
+            state = states[b]
             action_str = str(a.item())
             if batch["attention_mask"][b, -1] == 0:
                 new_states.append(state)
@@ -196,3 +196,19 @@ class SokobanEnv:
             "actions_ids": batch_actions_padded,
             "attention_mask": batch_attention_mask
         }
+
+    def get_dynamic_batch(self, level_strs):
+
+        dynamic_batch = {}
+
+        states = [self.parse_sokoban_level(level_str) for level_str in level_strs]
+        states_tensor = torch.stack([
+            self.symbolic_state_to_tensor(state, 10, 10).unsqueeze(0)
+            for state in states
+        ])
+        batch_attention_mask = torch.tensor([[1]*1 for _ in range(len(level_strs))])  # Dummy attention mask for 1 think step
+        dynamic_batch["states_0"] = states
+        dynamic_batch["states_tensors"] = states_tensor
+        dynamic_batch["attention_mask"] = batch_attention_mask
+        
+        return dynamic_batch
