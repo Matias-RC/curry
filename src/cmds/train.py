@@ -164,8 +164,16 @@ def main():
     seed = args.seed
     set_seed_for_reproducibility(seed)
 
-    from data.dataset import SokobanDataset, collate_fn
+    from envs.sokoban import SokobanEnv
+    from data.dataset import SokobanDataset
     from torch.utils.data import DataLoader
+
+    config_sokoban_env = {
+        "action_padding_value": -100,
+        "channels": ['boxes', 'goals', 'player', 'walls'],
+        "action_map": [(-1,0),(0,1),(1,0),(0,-1)],
+    }
+    sokoban_env = SokobanEnv(config_sokoban_env)
 
     config_total_dataset = {
         "source_levels": {
@@ -189,6 +197,7 @@ def main():
             "max": args.solution_length_max,
         },
         "seed": seed,
+        "env": sokoban_env,
     }
     total_dataset = SokobanDataset(config_total_dataset)
 
@@ -206,11 +215,10 @@ def main():
 
     batch_size_train = args.batch_size_train
     batch_size_eval = 128
-    train_loader = DataLoader(train_dataset, batch_size=batch_size_train, shuffle=True, collate_fn=collate_fn)
-    eval_loader = DataLoader(eval_dataset, batch_size=batch_size_eval, shuffle=False, collate_fn=collate_fn)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size_train, shuffle=True, collate_fn=sokoban_env.collate_fn)
+    eval_loader = DataLoader(eval_dataset, batch_size=batch_size_eval, shuffle=False, collate_fn=sokoban_env.collate_fn)
 
-    from models.thinker import Thinker
-    from models.consolidator import Consolidator
+    from models.maple import MAPLE
 
     model_config = {
         "thinker_config": {
@@ -250,40 +258,8 @@ def main():
             "memory_size": 2,
         },
         "num_supervision_steps": args.num_supervision_steps,
+        "env": sokoban_env,
     }
-
-    class MAPLE(nn.Module):
-        def __init__(self, config):
-            super().__init__()
-
-            thinker_config = config["thinker_config"]
-            self.thinker = Thinker(thinker_config)
-            consolidator_config = config["consolidator_config"]
-            self.consolidator = Consolidator(consolidator_config)
-
-            # Memory as nn.Parameter
-            memory_config = config["memory_config"]
-            self.memory = nn.Parameter(torch.randn(memory_config["memory_size"], memory_config["hidden_size"]))
-
-            # Supervision
-            self.num_supervision_steps = config["num_supervision_steps"] 
-            
-        def forward(self, batch):
-
-            B = batch["states_tensors"].size(0)
-            
-            memory_states = self.memory.unsqueeze(0).expand(B, -1, -1)  # shape [B, memory_size, hidden_size]
-            thinker_outputs = []
-            for _ in range(self.num_supervision_steps):
-                thinker_output = self.thinker(batch, memory_states)
-                memory_states = self.consolidator({
-                    "memory_states": memory_states,
-                    "thinking_stream": thinker_output["decoder_output"]["last_hidden_state"],
-                    "thinking_stream_attention_mask": thinker_output["attention_mask"],
-                })
-                thinker_outputs.append(thinker_output)
-            return thinker_outputs
-    
     model = MAPLE(model_config)
     model.train()
 

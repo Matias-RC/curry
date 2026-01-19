@@ -132,7 +132,27 @@ class Thinker(nn.Module):
             "decoder_output": decoder_output,
             "attention_mask": batch["attention_mask"],
         }
+    
+    @torch.no_grad()
+    def generate(self, env, dynamic_batch, memory_states=None, max_solution_length=50):
+        
+        for _ in range(max_solution_length):
+        
+            thinker_output = self.forward(dynamic_batch, memory_states)
 
+            logits = thinker_output["decoder_output"]["logits"]
+            policies = F.softmax(logits, dim=-1)
+
+            new_states_tensor, new_attention_mask = env.step_batch(dynamic_batch, policies)
+            
+            if new_attention_mask.max() == 1: # Attention mask indicates at least one active environment
+
+                dynamic_batch["states_tensors"] = torch.cat([dynamic_batch["states_tensors"], new_states_tensor], dim=1)
+                dynamic_batch["attention_mask"] = torch.cat([dynamic_batch["attention_mask"], new_attention_mask], dim=1)
+
+            else: break
+
+        return thinker_output
 
 if __name__ == "__main__":
         

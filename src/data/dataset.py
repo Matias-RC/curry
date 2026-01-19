@@ -2,7 +2,7 @@ from torch.utils.data import Dataset
 import torch
 from tqdm import tqdm
 from datasets import load_dataset, Features, Value
-from typing import Set, Tuple
+
 from pathlib import Path
 import requests
 
@@ -12,27 +12,6 @@ import os
 
 from collections import deque
 
-def compile_sokoban_state(state, grid_shape_x=10, grid_shape_y=10):
-    grid = [[" " for _ in range(grid_shape_x)] for _ in range(grid_shape_y)]
-    walls, boxes, goals, player = state["walls"], state["boxes"], state["goals"], state["player"]
-    for (y,x) in walls:
-        grid[y][x] = "#"
-    for (y,x) in goals:
-        if grid[y][x] == " ":
-            grid[y][x] = "."
-        elif grid[y][x] == "$":
-            grid[y][x] = "*"
-    for (y,x) in boxes:
-        if grid[y][x] == ".":
-            grid[y][x] = "*"
-        else:
-            grid[y][x] = "$"
-    py, px = player
-    if grid[py][px] == ".":
-        grid[py][px] = "+"
-    else:
-        grid[py][px] = "@"
-    return "\n".join("".join(row) for row in grid)+"\n"
 
 def load_level_by_id(config_dataset, folder_name: str, level_name: str) -> str:
     repo = config_dataset["source_levels"]["github"]
@@ -98,108 +77,6 @@ def load_level_by_id(config_dataset, folder_name: str, level_name: str) -> str:
 
 
 
-def parse_sokoban_level(level_str: str):
-    """
-    Parses a 10x10 Sokoban level string.
-
-    Returns:
-        walls  : Set[(r, c)]
-        boxes  : Set[(r, c)]
-        goals  : Set[(r, c)]
-        player : (r, c)
-    """
-    walls: Set[Tuple[int, int]] = set()
-    boxes: Set[Tuple[int, int]] = set()
-    goals: Set[Tuple[int, int]] = set()
-    player = None
-
-    rows = level_str.split("\n")
-
-    for r, row in enumerate(rows):
-        for c, ch in enumerate(row):
-            if ch == "#":
-                walls.add((r, c))
-
-            elif ch == "$":
-                boxes.add((r, c))
-
-            elif ch == ".":
-                goals.add((r, c))
-
-            elif ch == "@":
-                player = (r, c)
-
-            elif ch == "*":          # box on goal
-                boxes.add((r, c))
-                goals.add((r, c))
-
-            elif ch == "+":          # player on goal
-                player = (r, c)
-                goals.add((r, c))
-
-    if player is None:
-        raise ValueError("No player found in level")
-
-    return {
-        "walls": walls,
-        "boxes": boxes,
-        "goals": goals,
-        "player": player
-    }   
-
-def act(state, action_str):
-    action_map = [(-1,0),(0,1),(1,0),(0,-1)]
-    walls, boxes, goals, player = state["walls"], state["boxes"], state["goals"], state["player"]
-    
-    dy, dx = action_map[int(action_str)]
-    new_pos_player = (player[0]+dy, player[1]+dx)
-    if new_pos_player in walls:
-        return None, "player hit wall"
-        
-    if new_pos_player in boxes:
-        new_pos_box = (new_pos_player[0]+dy, new_pos_player[1]+dx)
-        if new_pos_box in boxes:
-            return None, "box hit box"
-        
-        if new_pos_box in walls:
-            return None, "box hit wall"
-
-        boxes.remove(new_pos_player)
-        boxes.add(new_pos_box)
-
-    player = new_pos_player
-    if tuple(sorted(boxes)) == tuple(sorted(goals)):
-        status = "solved"
-    else:
-        status = "in progress"
-
-    new_state = {"walls": walls, "boxes": boxes, "goals": goals, "player": player}
-
-    return new_state, status
-
-def play(state, actions_str):
-    states = [state]
-    if len(actions_str) == 0:
-        return states, "no actions"
-    else:
-        for action_str in actions_str:
-            state, status = act(state, action_str)
-            if status in ["solved", "in progress"]:
-                states.append(state)
-            else: break
-
-        return states, status
-
-def symbolic_state_to_tensor(state, grid_shape_x, grid_shape_y, channels):
-    num_channels = len(channels)
-    tensor = torch.zeros((grid_shape_x, grid_shape_y, num_channels), dtype=torch.float32)
-
-    for c, key in enumerate(channels):
-        values = state[key] if key != "player" else {state[key]}
-        idx = torch.tensor(list(values), dtype=torch.long)  # shape [N, 2]
-        tensor[idx[:, 0], idx[:, 1], c] = 1.0
-
-    return tensor
 
 def get_solution_subset(config_dataset):
     source_solutions = load_dataset(
@@ -231,8 +108,8 @@ def get_solution_subset(config_dataset):
 class SokobanDataset(Dataset):
     def __init__(self, config):
 
+        self.env = config["env"] 
         self.data = self.load_data(config)
-
 
     def load_data(self, config):
 
@@ -242,8 +119,6 @@ class SokobanDataset(Dataset):
         max_num_levels = config["max_num_levels"]
         order_by = config["order_by"]  # "shortest_first", "longest_first", "no_filter"
 
-        channels = ['boxes', 'goals', 'player', 'walls']
-        
         source_solutions = get_solution_subset(config)
 
         min_length = config["solution_length"]["min"]
@@ -283,12 +158,12 @@ class SokobanDataset(Dataset):
             actions_str = row["Actions"]
             solution_length = len(actions_str)
 
-            state_0 = parse_sokoban_level(level)
-            states, status = play(state_0, actions_str) 
+            state_0 = self.env.parse_sokoban_level(level)
+            states, status = self.env.play(state_0, actions_str) 
 
             if status == "solved":
                 states_tensor = [
-                    symbolic_state_to_tensor(state, grid_shape_x, grid_shape_y, channels)
+                    self.env.symbolic_state_to_tensor(state, grid_shape_x, grid_shape_y)
                     for state in states[:-1]
                 ]
                 states_tensor = torch.stack(states_tensor, dim=0)
@@ -328,33 +203,6 @@ class SokobanDataset(Dataset):
     def __getitem__(self, idx):
         return self.data[idx]
 
-
-def collate_fn(batch):
-    batch_states = [item["states_tensor"] for item in batch]
-    batch_actions = [item["actions_id"] for item in batch]
-
-    batch_attention_mask = [
-        torch.tensor([1]*len(item["actions_id"])) for item in batch
-    ]
-
-    batch_attention_mask = torch.nn.utils.rnn.pad_sequence(batch_attention_mask, batch_first=True, padding_value=0)
-    batch_states_padded = torch.nn.utils.rnn.pad_sequence(batch_states, batch_first=True, padding_value=0.0)
-    batch_actions_padded = torch.nn.utils.rnn.pad_sequence(batch_actions, batch_first=True, padding_value=-100)
-
-    level_strs = [item["level_str"] for item in batch]
-    action_strs = [item["actions_str"] for item in batch]
-    folder_names = [item["folder_name"] for item in batch]
-    level_names = [item["level_name"] for item in batch]
-
-    return {
-        "level_strs": level_strs,
-        "action_strs": action_strs,
-        "folder_names": folder_names,
-        "level_names": level_names,
-        "states_tensors": batch_states_padded,
-        "actions_ids": batch_actions_padded,
-        "attention_mask": batch_attention_mask
-    }
 
 
 # Example usage
