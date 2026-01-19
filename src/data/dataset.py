@@ -209,8 +209,8 @@ class SokobanDataset(Dataset):
         
         source_solutions = get_solution_subset(config)
 
-        min_length = config["solution_lenght"]["min"]
-        max_length = config["solution_lenght"]["max"]
+        min_length = config["solution_length"]["min"]
+        max_length = config["solution_length"]["max"]
         filtered = source_solutions.filter(
                 lambda example: (example["Steps"] >= min_length) and (example["Steps"] <= max_length)
             )
@@ -333,7 +333,7 @@ if __name__ == "__main__":
             "y": 10
         },
         "max_num_levels": 16,
-        "solution_lenght":{
+        "solution_length":{
             "min": 1,
             "max": 50,
         },

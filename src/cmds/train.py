@@ -31,24 +31,27 @@ def parser_args():
     parser.add_argument("--max_num_levels", type=int, default=2048, help="Maximum number of levels to use from the dataset")
     parser.add_argument("--train_fraction", type=float, default=0.8, help="Fraction of data to use for training")
     parser.add_argument("--difficulty", type=str, default="medium", help="Difficulty level of the Sokoban levels: easy, medium, hard")
-    parser.add_argument("--subset_name", type=str, default="valid", help="Subset name of the dataset to use")
-    
+    parser.add_argument("--split", type=str, default="valid", help="Subset name of the dataset to use")
+    parser.add_argument("--order_by", type=str,default="no_filter" ,help="Options: shortest_first, longest_first, no_filter")
+    parser.add_argument("--solution_length_min", type=int, default=-1, help="Minimum solution length to filter levels")
+    parser.add_argument("--solution_length_max", type=int, default=1000, help="Maximum solution length to filter levels")   
+
     # Thinker arguments
     parser.add_argument("--num_think_steps", type=int, default=2, help="Number of thinking steps")
-
-    # Curriculum arguments
-    parser.add_argument("--filter_by", type=str,default="no_filter" ,help="Options: shortest_first, longest_first, no_filter")
 
     # MAPLE arguments
     parser.add_argument("--num_supervision_steps", type=int, default=5, help="Number of supervision steps in MAPLE")
     
     # Output arguments
     parser.add_argument("--where_to_save", type=str, default="s3://rl6-reinforcement-learning-01", help="Where to save outputs: local or s3")
-    parser.add_argument("--output_dir", type=str, default="behavioral-cloning", help="Directory to save outputs")
+    parser.add_argument("--output_dir", type=str, default="behavioral-cloning/test", help="Directory to save outputs")
     parser.add_argument("--metrics_save_epoch_rate", type=int, default=5, help="Interval (in epochs) to save metrics")
 
     # Log arguments
     parser.add_argument("--verbose", type=int, default=1, help="If set, print training logs")
+
+    # Device 
+    parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu", help="Device to use for training: cuda or cpu")
 
     return parser.parse_args()
 
@@ -65,29 +68,30 @@ def set_seed_for_reproducibility(seed: int):
 
 def model_eval(model, eval_loader, loss_fn):
     model.eval()
-    eval_loss, acc_loss = 0.0, 0.0
+    eval_loss = {step: 0.0 for step in range(model.num_supervision_steps)}
+    eval_acc  = {step: 0.0 for step in range(model.num_supervision_steps)}
     with torch.no_grad():
         for batch in eval_loader:
-            batch = {k: v.to("cuda") if torch.cuda.is_available() else v for k, v in batch.items()}
+            batch = {k: v.to(model.device) if torch.cuda.is_available() and isinstance(v, torch.Tensor) else v for k, v in batch.items()}
             output = model(batch)
-            decoder_output = output["decoder_output"]  # shape [B, T, num_actions]
-            logits = decoder_output["logits"]
             actions_ids = batch["actions_ids"]         # shape [B, T]
-            
-            B, T, num_actions = logits.shape
-            loss = loss_fn(logits.view(B * T, num_actions), actions_ids.view(B * T))
-            eval_loss += loss.item() * B
 
-            preds = logits.argmax(dim=-1)  # shape [B, T]
-            correct = (preds == actions_ids).float()
-            mask = (actions_ids != -100).float()
-            acc = (correct * mask).sum() / mask.sum()
-            acc_loss += acc.item() * B
+            for step in range(model.num_supervision_steps):
+                decoder_output = output[step]["decoder_output"]  # shape [B, T, num_actions]
+                logits = decoder_output["logits"]
+                B, T, num_actions = logits.shape
+                loss = loss_fn(logits.view(B * T, num_actions), actions_ids.view(B * T))
+                eval_loss[step] += loss.item() * B
+                preds = logits.argmax(dim=-1)  # shape [B, T]
+                correct = (preds == actions_ids).float()
+                mask = (actions_ids != -100).float()
+                acc = (correct * mask).sum() / mask.sum()
+                eval_acc[step] += acc.item() * B
             
-    eval_loss /= len(eval_loader.dataset)
-    acc_loss /= len(eval_loader.dataset)
+    eval_loss = {step: eval_loss[step] / len(eval_loader.dataset) for step in eval_loss}
+    eval_acc  = {step: eval_acc[step] / len(eval_loader.dataset) for step in eval_acc}
     model.train()
-    return eval_loss, acc_loss
+    return eval_loss, eval_acc
 
 def create_experiment(args, verbose=True): # Get experiment name from date and time. Also save args in json file.
 
@@ -164,13 +168,27 @@ def main():
     from torch.utils.data import DataLoader
 
     config_total_dataset = {
-        "mode": "supervised",
+        "source_levels": {
+            "github": "google-deepmind/boxoban-levels",
+            "cache_dir": "~/scratch/curry/",
+        },
+        "source_solutions": {
+            "huggingface": "AlignmentResearch/boxoban-astar-solutions",
+            "cache_dir": "~/scratch/curry/",
+        },
         "difficulty": args.difficulty,
-        "subset_name": args.subset_name,
-        "grid_shape_x": 10,
-        "grid_shape_y": 10,
+        "split": args.split,
+        "grid_shape": {
+            "x": 10,
+            "y": 10,
+        },
         "max_num_levels": args.max_num_levels,
-        "filter_by": args.filter_by,
+        "order_by": args.order_by,
+        "solution_length": {
+            "min": args.solution_length_min,
+            "max": args.solution_length_max,
+        },
+        "seed": seed,
     }
     total_dataset = SokobanDataset(config_total_dataset)
 
@@ -255,25 +273,34 @@ def main():
             B = batch["states_tensors"].size(0)
             
             memory_states = self.memory.unsqueeze(0).expand(B, -1, -1)  # shape [B, memory_size, hidden_size]
+            thinker_outputs = []
             for _ in range(self.num_supervision_steps):
                 thinker_output = self.thinker(batch, memory_states)
                 memory_states = self.consolidator({
                     "memory_states": memory_states,
                     "thinking_stream": thinker_output["decoder_output"]["last_hidden_state"],
                 })
-            
-            return thinker_output
+                thinker_outputs.append(thinker_output)
+            return thinker_outputs
     
     model = MAPLE(model_config)
     model.train()
 
-    if torch.cuda.is_available():
-        model = model.to("cuda")
-        print("Using GPU for training")
+    if args.device == "cuda":
+        if torch.cuda.is_available():
+            model = model.to("cuda")
+            print("Using GPU for training")
+        else:
+            model = model.to("cpu")
+            print("Using CPU for training")
     else:
+        model = model.to("cpu")
         print("Using CPU for training")
 
-    # Optimzer
+    device = next(model.parameters()).device
+    model.device = device
+
+    # Optimizer
     learning_rate = args.learning_rate
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
     loss_fn = torch.nn.CrossEntropyLoss(ignore_index=-100, reduction="mean")
@@ -294,10 +321,10 @@ def main():
 
         for _, batch in enumerate(train_loader):
             optimizer.zero_grad()
-            batch = {k: v.to("cuda") if torch.cuda.is_available() else v for k, v in batch.items()}
+            batch = {k: v.to(model.device) if torch.cuda.is_available() and isinstance(v, torch.Tensor) else v for k, v in batch.items()}
 
             output = model(batch)
-            decoder_output = output["decoder_output"]  # shape [B, T, num_actions]
+            decoder_output = output[-1]["decoder_output"]  # shape [B, T, num_actions]
             logits = decoder_output["logits"]
             actions_ids = batch["actions_ids"]         # shape [B, T]
             
@@ -319,8 +346,8 @@ def main():
         }
         if args.verbose == 1: # Print using tqdm
             tqdm_epochs.set_postfix({
-                "Eval Loss": f"{eval_loss:.4f}",
-                "Eval Acc": f"{eval_acc:.4f}",
+                "Eval Loss": {step: f"{eval_loss[step]:.4f}" for step in eval_loss},
+                "Eval Acc": {step: f"{eval_acc[step]:.4f}" for step in eval_acc},
                 "Train Loss": f"{train_loss:.4f}",
             })
         # Save metric every 10 epochs in the s3 (args.where_to_save)
