@@ -205,9 +205,19 @@ class SokobanDataset(Dataset):
 
 
 
-# Example usage
+# Example usagex
 if __name__ == "__main__":
+    import sys
+
+    sys.path.append("./src")
+    from envs.sokoban import SokobanEnv
+    config_sokoban_env = {
+        "action_padding_value": -100,
+        "channels": ['boxes', 'goals', 'player', 'walls'],
+        "action_map": [(-1,0),(0,1),(1,0),(0,-1)],
+    }
     config_dataset = {
+        "env": SokobanEnv(config_sokoban_env),
         "source_levels": {
             "github": "google-deepmind/boxoban-levels",
             "cache_dir": "~/scratch/curry/",
@@ -231,7 +241,7 @@ if __name__ == "__main__":
         "order_by": "shortest_first",
     }
     dataset = SokobanDataset(config_dataset)
-    print(next(iter(dataset)))
+    print(len(dataset.data))
 
     """{'level_str': '##########\n##########\n##########\n##########\n##@#######\n# $   ####\n# ..$$ ###\n#  $.  ###\n#. #    ##\n##########\n',
     'actions_str': '211123233112110303033322',
