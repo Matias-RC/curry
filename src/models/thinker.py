@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from transformers.cache_utils import DynamicCache
 
 class VisualEncoder(nn.Module):
     def __init__(self, config):
@@ -45,28 +46,31 @@ class VisualEncoder(nn.Module):
             return out.numel()
 
     def forward(self, x):
-        B, T, W, H, C = x.shape
-
-        # (B, T, C, W, H) → (B*T, C, W, H)
-        x = x.permute(0, 1, 4, 2, 3).reshape(B * T, C, W, H)
+        # Handle both (B, C, H, W) and (B, T, C, H, W)  
+        if x.dim() == 5:
+            B, T, C, H, W = x.shape
+            x = x.view(B * T, C, H, W)
+            merge_time = True
+        else:
+            merge_time = False
 
         x = self.cnn(x)
         x = x.reshape(x.size(0), -1)
         x = self.fc(x)
 
-        return x.view(B, T, -1)
+        if merge_time:
+            x = x.view(B, T, -1)
+        return x
 
 class ActionDecoder(nn.Module):
     def __init__(self, config):
         super().__init__()
-
         self.model_name = config["model_name"]
-        hidden_size = config["hidden_size"]
-        vocab_size = config["vocab_size"]
+        self.hidden_size = config["hidden_size"]
+        self.vocab_size = config["vocab_size"]
         self.num_think_steps = config["num_think_steps"]
 
         args = config["args"]
-
         if self.model_name == "qwen2":
             from transformers import Qwen2Model, Qwen2Config
             args_model = {
@@ -78,10 +82,56 @@ class ActionDecoder(nn.Module):
             }
             config_model =  Qwen2Config(**args_model)
             self.backbone = Qwen2Model(config_model)
+        
+        # PPO Heads
+        self.actor_head = nn.Linear(self.hidden_size, self.vocab_size)
+        self.value_head = nn.Linear(self.hidden_size, 1)
+    
+    def detach_kv_cache(self, cache):
+        my_new_cache = []
+        for i in range(cache):
+            my_new_cache.append((i[0].detach(), i[1].detach()))
+        return tuple(my_new_cache)
 
-        self.lm_head = nn.Linear(hidden_size, vocab_size)
+    def forward_step(self, x, past_key_values=None):
+        latent_states = x["latent_states"]
+        memory_states = x.get("memory_states", None)
+        if self.model_name == "qwen2":
+            if memory_states != None or past_key_values == None:
+                outputs = self.backbone(
+                    inputs_embeds=memory_states,
+                    use_cache=False
+                )          
+                current_kv = self.detach_kv_cache(outputs.past_key_values.to_legacy_cache())
+            else:
+                current_kv = past_key_values
 
-    def forward(self, x):
+            h = latent_states
+    
+            for i in range(self.num_think_steps):
+                outputs = self.backbone(
+                    inputs_embeds=h,
+                    past_key_values=DynamicCache.from_legacy_cache(current_kv),
+                    use_cache=True
+                )
+                h = outputs.last_hidden_state
+            h_out = h
+            new_kv = outputs.past_key_values  # Tuple of KVs
+
+            # Heads
+            logits = self.actor_head(h_out)
+            value = self.value_head(h_out)
+
+            return {
+                "logits": logits,      # (B, 1, Vocab)
+                "value": value,        # (B, 1, 1)
+                "last_hidden_state": h_out, # (B, 1, D)
+                "past_key_values": self.detach_kv_cache(new_kv.to_legacy_cache())
+            }
+        else:
+            raise ValueError(f"Unknown model name: {self.model_name}")
+
+    def forward_parallel(self, x):
         latent_states = x["latent_states"]  # (B, T, D)    
         memory_states = x.get("memory_states", None)  # (B, M, D) or None
         if self.model_name == "qwen2":
@@ -93,13 +143,16 @@ class ActionDecoder(nn.Module):
                 last_hidden_state = outputs.last_hidden_state
                 h_new = last_hidden_state[:, -h.size(1):, :]  # Take the last T tokens
     
-                h = h + h_new
+                h = h_new
     
-            logits = self.lm_head(h)
+            logits = self.actor_head(h)
+            value = self.value_head(h)
+
     
             return {
                 "logits": logits,
-                "last_hidden_state": h,
+                "value": value,
+                "last_hidden_state": h, #No need to pass the last keys and values since this is done all in parallel
             }
     
         else:
@@ -117,41 +170,32 @@ class Thinker(nn.Module):
         self.action_decoder = ActionDecoder(config_action_decoder)
     
     def forward(self, batch, memory_states=None):
+        if batch["step_type"] == "parallel":
+            latent_states = batch["states_tensors"]  # shape [B, T, D]
+            x = {
+                "latent_states": latent_states,
+            }
+            if memory_states is not None:
+                x["memory_states"] = memory_states
 
-        states_tensors = batch["states_tensors"]  # shape [B, T, H, W, C]
-        latent_states = self.visual_encoder(states_tensors)  # shape [B, T, D]
-        x = {
-            "latent_states": latent_states,
-        }
-        if memory_states is not None:
-            x["memory_states"] = memory_states
+            decoder_output = self.action_decoder.forward_parallel(x)  # shape [B, T, num_actions]
 
-        decoder_output = self.action_decoder(x)  # shape [B, T, num_actions]
-
-        return {
-            "decoder_output": decoder_output,
-            "attention_mask": batch["attention_mask"],
-        }
-    
-    def generate(self, env, dynamic_batch, memory_states=None, max_solution_length=50):
-        
-        for _ in range(max_solution_length):
-        
-            thinker_output = self.forward(dynamic_batch, memory_states)
-
-            logits = thinker_output["decoder_output"]["logits"]
-            policies = F.softmax(logits, dim=-1)
-
-            new_states_tensor, new_attention_mask = env.step_batch(dynamic_batch, policies[:, -1, :])
-            
-            if new_attention_mask.max() == 1: # Attention mask indicates at least one active environment
-
-                dynamic_batch["states_tensors"] = torch.cat([dynamic_batch["states_tensors"], new_states_tensor], dim=1)
-                dynamic_batch["attention_mask"] = torch.cat([dynamic_batch["attention_mask"], new_attention_mask], dim=1)
-
-            else: break
-
-        return thinker_output
+            return {
+                "decoder_output": decoder_output,
+                "attention_mask": batch["attention_mask"],
+            }
+        elif batch["step_type"] == "autorregressive":
+            states_tensors = batch["states_tensors"]  # shape [B, H, W, C]
+            latent_states = self.visual_encoder(states_tensors)
+            x = {
+                "latent_states": latent_states
+            }
+            if memory_states is not None and batch["step"] == 0:
+                x["memory_states"] = memory_states
+            decoder_output = self.action_decoder.forward_step(x)
+            return {
+                "decoder_output": decoder_output
+            }
 
 if __name__ == "__main__":
         

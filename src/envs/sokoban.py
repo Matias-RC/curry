@@ -80,47 +80,63 @@ class SokobanEnv:
     def step(self, state, action_str):
 
         walls, boxes, goals, player = state["walls"], state["boxes"], state["goals"], state["player"]
-        
+
         dy, dx = self.action_map[int(action_str)]
         new_pos_player = (player[0]+dy, player[1]+dx)
         if new_pos_player in walls:
-            return None, "player hit wall"
-            
+            return None, "player hit wall", 0.0
+
+        reward = -0.01  # Small penalty per step
+
         if new_pos_player in boxes:
             new_pos_box = (new_pos_player[0]+dy, new_pos_player[1]+dx)
             if new_pos_box in boxes:
-                return None, "box hit box"
-            
+                return None, "box hit box", 0.0
+
             if new_pos_box in walls:
-                return None, "box hit wall"
+                return None, "box hit wall", 0.0
+
+            # Check if box was on goal before moving
+            was_on_goal = new_pos_player in goals
+            # Check if box will be on goal after moving
+            will_be_on_goal = new_pos_box in goals
 
             boxes.remove(new_pos_player)
             boxes.add(new_pos_box)
 
+            # Update reward based on box movement
+            if will_be_on_goal and not was_on_goal:
+                reward += 1.0  # Pushed box onto goal
+            elif was_on_goal and not will_be_on_goal:
+                reward += -1.0  # Pushed box off goal
+
         player = new_pos_player
         if tuple(sorted(boxes)) == tuple(sorted(goals)):
             status = "solved"
+            reward += 10.0  # Bonus for solving the puzzle
         else:
             status = "in progress"
 
         new_state = {"walls": walls, "boxes": boxes, "goals": goals, "player": player}
 
-        return new_state, status
+        return new_state, status, reward
     
     def play(self, state, actions_str, early_stop=False):
         states = [state]
+        total_reward = 0.0
         if len(actions_str) == 0:
-            return states, "no actions"
+            return states, "no actions", total_reward
         else:
             for action_str in actions_str:
-                state, status = self.step(state, action_str)
+                state, status, reward = self.step(state, action_str)
+                total_reward += reward
                 if status in ["solved", "in progress"]:
                     states.append(state)
                     if early_stop and status == "solved":
                         break
                 else: break
 
-        return states, status
+        return states, status, total_reward
 
 
     def symbolic_state_to_tensor(self, state, grid_shape_x, grid_shape_y):
@@ -135,42 +151,87 @@ class SokobanEnv:
 
         return tensor
 
-    def step_batch(self, batch, policies): #current_status = ["in progress"] * B
+    def step_batch(self, batch, policies, temperature=1.0):
+        """
+        policies: [B, A] or [B, T, A] (last timestep assumed)
+        """
 
         states = batch["states"]
         device = batch["states_tensors"].device
         B = len(states)
-        
-        grid_shape_x = batch["states_tensors"].size(-3) # B, T, H, W, C
-        grid_shape_y = batch["states_tensors"].size(-2)
 
-        actions = torch.argmax(policies, dim=-1)  # shape [B, T]
-        
+        H = batch["states_tensors"].size(-3)
+        W = batch["states_tensors"].size(-2)
+
+        logits = policies / temperature
+
+        dist = torch.distributions.Categorical(logits=logits)
+        actions = dist.sample()  # [B]
+
         new_states = []
         new_states_tensor = []
         new_attention_mask = []
-        for b, a in zip(range(B), actions):
+        rewards = []
+
+        for b in range(B):
             state = states[b]
-            action_str = str(a.item())
+
+            # if already terminated then pad
             if batch["attention_mask"][b, -1] == 0:
                 new_states.append(state)
-                new_states_tensor.append(torch.zeros_like(batch["states_tensors"][b, :1]).to(device))
+                new_states_tensor.append(
+                    torch.zeros_like(batch["states_tensors"][b, :1]).to(device)
+                )
                 new_attention_mask.append([0])
+                rewards.append(0.0)
+                continue
+
+            action_str = str(actions[b].item())
+            new_state, status, reward = self.step(state, action_str)
+
+            if status == "in progress":
+                obs = self.symbolic_state_to_tensor(new_state, H, W).unsqueeze(0)
+                mask = 1
             else:
-                new_state, status = self.step(state, action_str)
-                if status == "in progress":
-                    new_state_tensor = self.symbolic_state_to_tensor(new_state, grid_shape_x, grid_shape_y).unsqueeze(0)
-                else:
-                    new_state_tensor = torch.zeros_like(batch["states_tensors"][b, :1]) 
-                new_states.append(new_state)
-                new_states_tensor.append(new_state_tensor.to(device))
-                new_attention_mask.append([1] if status == "in progress" else [0])
+                obs = torch.zeros_like(batch["states_tensors"][b, :1])
+                mask = 0
+
+            new_states.append(new_state)
+            new_states_tensor.append(obs.to(device))
+            new_attention_mask.append([mask])
+            rewards.append(reward)
 
         batch["states"] = new_states
-        new_attention_mask = torch.tensor(new_attention_mask).to(device)
         new_states_tensor = torch.stack(new_states_tensor, dim=0)
-        
-        return new_states_tensor, new_attention_mask
+        new_attention_mask = torch.tensor(new_attention_mask, device=device)
+        rewards_tensor = torch.tensor(rewards, dtype=torch.float32, device=device)
+
+        return new_states_tensor, new_attention_mask, rewards_tensor
+
+    def symbolic_batch_to_tensor(self, states, grid_shape_x, grid_shape_y, device=None):
+        """
+        states: list of symbolic states (len B)
+        returns: [B, H, W, C]
+        """
+
+        B = len(states)
+        C = len(self.channels)
+
+        tensor = torch.zeros(
+            (B, grid_shape_x, grid_shape_y, C),
+            dtype=torch.float32,
+            device=device
+        )
+
+        for b, state in enumerate(states):
+            for c, key in enumerate(self.channels):
+                values = state[key] if key != "player" else {state[key]}
+                if len(values) == 0:
+                    continue
+                idx = torch.tensor(list(values), dtype=torch.long, device=device)
+                tensor[b, idx[:, 0], idx[:, 1], c] = 1.0
+
+        return tensor
 
     def collate_fn(self, batch):
 
