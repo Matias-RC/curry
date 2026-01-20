@@ -93,8 +93,9 @@ class ActionDecoder(nn.Module):
             my_new_cache.append((i[0].detach(), i[1].detach()))
         return tuple(my_new_cache)
 
-    def forward_step(self, x, past_key_values=None):
+    def forward_step(self, x):
         latent_states = x["latent_states"]
+        past_key_values = x["kv_cache"]
         memory_states = x.get("memory_states", None)
         if self.model_name == "qwen2":
             if memory_states != None or past_key_values == None:
@@ -188,7 +189,8 @@ class Thinker(nn.Module):
             states_tensors = batch["states_tensors"]  # shape [B, H, W, C]
             latent_states = self.visual_encoder(states_tensors)
             x = {
-                "latent_states": latent_states
+                "latent_states": latent_states,
+                "kv_cache":batch["kv_cache"]
             }
             if memory_states is not None and batch["step"] == 0:
                 x["memory_states"] = memory_states

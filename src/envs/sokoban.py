@@ -115,11 +115,20 @@ class SokobanEnv:
             status = "solved"
             reward += 10.0  # Bonus for solving the puzzle
         else:
-            status = "in progress"
+            status = "in_progress"
 
         new_state = {"walls": walls, "boxes": boxes, "goals": goals, "player": player}
 
         return new_state, status, reward
+    
+    def get_att_masks(self, symbolic_batch, device):
+        mask = []
+        for i in symbolic_batch:
+            if tuple(sorted(i["boxes"])) == tuple(sorted(i["goals"])):
+                mask.append([0])
+            else:
+                mask.append([1])
+        return torch.tensor(mask, device=device)
     
     def play(self, state, actions_str, early_stop=False):
         states = [state]
@@ -130,7 +139,7 @@ class SokobanEnv:
             for action_str in actions_str:
                 state, status, reward = self.step(state, action_str)
                 total_reward += reward
-                if status in ["solved", "in progress"]:
+                if status in ["solved", "in_progress"]:
                     states.append(state)
                     if early_stop and status == "solved":
                         break
@@ -153,14 +162,14 @@ class SokobanEnv:
 
     def step_batch(self, batch, policies, temperature=1.0):
         """
-        policies: [B, A] or [B, T, A] (last timestep assumed)
+        policies: [B, A] 
         """
 
         states = batch["states"]
         device = batch["states_tensors"].device
         B = len(states)
 
-        H = batch["states_tensors"].size(-3)
+        H = batch["states_tensors"].size(-3) #states tensor (B,T,H,W,C)
         W = batch["states_tensors"].size(-2)
 
         logits = policies / temperature
@@ -189,7 +198,7 @@ class SokobanEnv:
             action_str = str(actions[b].item())
             new_state, status, reward = self.step(state, action_str)
 
-            if status == "in progress":
+            if status == "in_progress":
                 obs = self.symbolic_state_to_tensor(new_state, H, W).unsqueeze(0)
                 mask = 1
             else:
@@ -203,10 +212,10 @@ class SokobanEnv:
 
         batch["states"] = new_states
         new_states_tensor = torch.stack(new_states_tensor, dim=0)
-        new_attention_mask = torch.tensor(new_attention_mask, device=device)
+        new_attention_mask = torch.tensor(new_attention_mask, device=device) #shape: (B,1)
         rewards_tensor = torch.tensor(rewards, dtype=torch.float32, device=device)
 
-        return new_states_tensor, new_attention_mask, rewards_tensor
+        return new_states_tensor, new_attention_mask, rewards_tensor, actions
 
     def symbolic_batch_to_tensor(self, states, grid_shape_x, grid_shape_y, device=None):
         """
