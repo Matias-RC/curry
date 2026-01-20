@@ -23,21 +23,21 @@ def parser_args():
     parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
 
     # Training arguments
-    parser.add_argument("--batch_size_train", type=int, default=8, help="Batch size for training")
+    parser.add_argument("--batch_size_train", type=int, default=16, help="Batch size for training")
     parser.add_argument("--num_epochs", type=int, default=100, help="Number of training epochs")
     parser.add_argument("--learning_rate", type=float, default=1e-4, help="Learning rate for optimizer")
 
     # Dataset arguments
     parser.add_argument("--max_num_levels", type=int, default=2048, help="Maximum number of levels to use from the dataset")
     parser.add_argument("--train_fraction", type=float, default=0.8, help="Fraction of data to use for training")
-    parser.add_argument("--difficulty", type=str, default="medium", help="Difficulty level of the Sokoban levels: easy, medium, hard")
-    parser.add_argument("--split", type=str, default="valid", help="Subset name of the dataset to use")
+    parser.add_argument("--difficulty", type=str, default="unfiltered", help="Difficulty level of the Sokoban levels: easy, medium, hard")
+    parser.add_argument("--split", type=str, default="train", help="Subset name of the dataset to use")
     parser.add_argument("--order_by", type=str,default="no_filter" ,help="Options: shortest_first, longest_first, no_filter")
     parser.add_argument("--solution_length_min", type=int, default=-1, help="Minimum solution length to filter levels")
     parser.add_argument("--solution_length_max", type=int, default=1000, help="Maximum solution length to filter levels")   
 
     # Thinker arguments
-    parser.add_argument("--num_think_steps", type=int, default=2, help="Number of thinking steps")
+    parser.add_argument("--num_think_steps", type=int, default=1, help="Number of thinking steps")
 
     # MAPLE arguments
     parser.add_argument("--num_supervision_steps_train", type=int, default=2, help="Number of supervision steps in MAPLE during training")
