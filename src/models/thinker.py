@@ -46,12 +46,15 @@ class VisualEncoder(nn.Module):
             return out.numel()
 
     def forward(self, x):
-        # Handle both (B, C, H, W) and (B, T, C, H, W)  
+        # Handle both (B, H, W, C) and (B, T, H, W, C)  
         if x.dim() == 5:
-            B, T, C, H, W = x.shape
-            x = x.view(B * T, C, H, W)
+            B, T, H, W, C = x.shape
+            # But we need (B*T, C, H, W) for Conv2d
+            x = x.view(B * T, H, W, C)
+            x = x.permute(0, 3, 1, 2)
             merge_time = True
         else:
+            x = x.permute(0, 3, 1, 2)  # (B, C, H, W)
             merge_time = False
 
         x = self.cnn(x)
@@ -83,13 +86,13 @@ class ActionDecoder(nn.Module):
             config_model =  Qwen2Config(**args_model)
             self.backbone = Qwen2Model(config_model)
         
-        # PPO Heads
+        # RL Heads
         self.actor_head = nn.Linear(self.hidden_size, self.vocab_size)
         self.value_head = nn.Linear(self.hidden_size, 1)
     
     def detach_kv_cache(self, cache):
         my_new_cache = []
-        for i in range(cache):
+        for i in list(cache):
             my_new_cache.append((i[0].detach(), i[1].detach()))
         return tuple(my_new_cache)
 
@@ -98,14 +101,16 @@ class ActionDecoder(nn.Module):
         past_key_values = x["kv_cache"]
         memory_states = x.get("memory_states", None)
         if self.model_name == "qwen2":
-            if memory_states != None or past_key_values == None:
+            if memory_states != None and past_key_values == None:
                 outputs = self.backbone(
                     inputs_embeds=memory_states,
                     use_cache=False
                 )          
                 current_kv = self.detach_kv_cache(outputs.past_key_values.to_legacy_cache())
-            else:
+            elif past_key_values != None:
                 current_kv = past_key_values
+            else:
+                current_kv = None
 
             h = latent_states
     
@@ -185,7 +190,7 @@ class Thinker(nn.Module):
                 "decoder_output": decoder_output,
                 "attention_mask": batch["attention_mask"],
             }
-        elif batch["step_type"] == "autorregressive":
+        elif batch["step_type"] == "autoregressive":
             states_tensors = batch["states_tensors"]  # shape [B, H, W, C]
             latent_states = self.visual_encoder(states_tensors)
             x = {
@@ -198,6 +203,8 @@ class Thinker(nn.Module):
             return {
                 "decoder_output": decoder_output
             }
+        else:
+            raise ValueError(f"Unknown step type: {batch['step_type']}")
 
 if __name__ == "__main__":
         
@@ -243,3 +250,4 @@ if __name__ == "__main__":
 
     thinker = Thinker(config_thinker)
     thinker.eval()
+

@@ -84,17 +84,17 @@ class SokobanEnv:
         dy, dx = self.action_map[int(action_str)]
         new_pos_player = (player[0]+dy, player[1]+dx)
         if new_pos_player in walls:
-            return None, "player hit wall", 0.0
+            return {"walls": walls, "boxes": boxes, "goals": goals, "player": player}, "in_progress", -0.01
 
         reward = -0.01  # Small penalty per step
 
         if new_pos_player in boxes:
             new_pos_box = (new_pos_player[0]+dy, new_pos_player[1]+dx)
             if new_pos_box in boxes:
-                return None, "box hit box", 0.0
+                return {"walls": walls, "boxes": boxes, "goals": goals, "player": player}, "in_progress", -0.01
 
             if new_pos_box in walls:
-                return None, "box hit wall", 0.0
+                return {"walls": walls, "boxes": boxes, "goals": goals, "player": player}, "in_progress", -0.01
 
             # Check if box was on goal before moving
             was_on_goal = new_pos_player in goals
@@ -116,6 +116,7 @@ class SokobanEnv:
             reward += 10.0  # Bonus for solving the puzzle
         else:
             status = "in_progress"
+
 
         new_state = {"walls": walls, "boxes": boxes, "goals": goals, "player": player}
 
