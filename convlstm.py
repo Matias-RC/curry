@@ -56,6 +56,9 @@ class ConvLSTMFeatureExtractor(BaseFeaturesExtractor):
         return self.conv(observations)
 
 class ConvLSTMPolicy(RecurrentActorCriticPolicy):
+    """
+    Currently stacked ConvLSTM layers are not supported.
+    """
     def __init__(self, observation_space, action_space, lr_schedule, **kwargs):
         super(ConvLSTMPolicy, self).__init__(observation_space, action_space, lr_schedule, **kwargs)
 
