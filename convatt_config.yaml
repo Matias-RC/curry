@@ -1,0 +1,18 @@
+config:
+  conv_configs:
+    - in_channels: 4
+      out_channels: 32
+      kernel_size: 3
+      stride: 1
+      padding: 1
+    - in_channels: 32
+      out_channels: 64
+      kernel_size: 3
+      stride: 1
+      padding: 1
+  hidden_channels: 64
+  qk_dim: 64
+  kernel_size: 3
+  stack_size: 1
+  memory_size: 3
+  pool_output_size: [2, 2]

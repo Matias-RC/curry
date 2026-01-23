@@ -5,11 +5,8 @@ from dataclasses import dataclass
 from typing import Tuple, List
 
 from sb3_contrib.common.recurrent.policies import RecurrentActorCriticPolicy
+from sb3_contrib.common.recurrent.type_aliases import RNNStates
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
-
-# ==========================================
-# 1. Configuration & Helper Classes
-# ==========================================
 
 @dataclass
 class ConvConfig:
@@ -106,15 +103,11 @@ class StackedConvLSTM(nn.Module):
         # Return final layer output and all new states
         return current_input, next_states
 
-# ==========================================
-# 2. Feature Extractor
-# ==========================================
-
 class ConvFeatureExtractor(BaseFeaturesExtractor):
     """
     Standard CNN to downsample image before ConvLSTM.
     """
-    def __init__(self, observation_space: Box, conv_configs: list[ConvConfig]):
+    def __init__(self, observation_space: Box, conv_configs: List[ConvConfig]):
         super().__init__(observation_space, features_dim=1) # dim is dummy here, calculated below
         
         layers = []
@@ -124,85 +117,217 @@ class ConvFeatureExtractor(BaseFeaturesExtractor):
         self.cnn = nn.Sequential(*layers)
 
         # Calculate output shape
+        # After VecTransposeImage, observation_space.shape is (C, H, W)
         with torch.no_grad():
             dummy = torch.zeros((1, *observation_space.shape))
             out = self.cnn(dummy)
             self.out_channels, self.h, self.w = out.shape[1:]
-            self.features_dim = self.out_channels * self.h * self.w
+            self._features_dim = self.out_channels * self.h * self.w
 
     def forward(self, obs: torch.Tensor) -> torch.Tensor:
         return self.cnn(obs)
 
-# ==========================================
-# 3. The Policy
-# ==========================================
-
 class ConvLSTMPolicy(RecurrentActorCriticPolicy):
-    def __init__(self, observation_space, action_space, lr_schedule, config, **kwargs):
-        # We need to initialize with dummy values then override
-        self.config = config
-        super().__init__(observation_space, action_space, lr_schedule, **kwargs)
+    def __init__(self, observation_space, action_space, lr_schedule, **kwargs):
+        # Extract config BEFORE super().__init__
+        self.config = kwargs.pop("config")
 
         # 1. Extract Config
-        conv_configs = config['conv_configs']
-        self.hidden_channels = config['hidden_channels']
-        kernel_size = config['kernel_size']
-        self.stack_size = config.get("stack_size", 1)
+        conv_configs_params = self.config['conv_configs']
+        conv_configs = [ConvConfig(**params) for params in conv_configs_params]
+        self.hidden_channels = self.config['hidden_channels']
+        kernel_size = self.config['kernel_size']
+        self.stack_size = self.config.get("stack_size", 1)
+        self.pool_output_size = self.config.get("pool_output_size", [2, 2])
 
-        # 2. Re-Initialize Feature Extractor
+        # Convert to tuple if needed
+        if isinstance(self.pool_output_size, list):
+            self.pool_output_size = tuple(self.pool_output_size)
+
+        # Calculate the pooled dimension
+        pooled_h, pooled_w = self.pool_output_size
+        self.pooled_dim = self.hidden_channels * pooled_h * pooled_w
+
+        # 2. Create temporary feature extractor to get dimensions
+        temp_extractor = ConvFeatureExtractor(observation_space, conv_configs)
+        h = temp_extractor.h
+        w = temp_extractor.w
+
+        # Calculate lstm_hidden_size for SB3 - uses spatial dimensions for state storage
+        lstm_hidden_size = self.hidden_channels * h * w
+        kwargs['lstm_hidden_size'] = lstm_hidden_size
+        kwargs['n_lstm_layers'] = self.stack_size
+
+        # Call super().__init__ with proper lstm_hidden_size
+        super().__init__(observation_space, action_space, lr_schedule, **kwargs)
+
+        # 3. Re-Initialize Feature Extractor (replace the one created by super)
         self.features_extractor = ConvFeatureExtractor(observation_space, conv_configs)
-        
+
         # Get shapes after CNN
         c = self.features_extractor.out_channels
         h = self.features_extractor.h
         w = self.features_extractor.w
         self.spatial_shape = (h, w)
         self.cnn_output_dim = c * h * w
-        
+
         # 3. Initialize Stacked ConvLSTM
         self.lstm_conv = StackedConvLSTM(c, self.hidden_channels, kernel_size, self.stack_size)
-        
-        # 4. Calculate LSTM Output Dimension (Flattened)
-        # The output of the ConvLSTM is (Batch, Hidden_Channels, H, W)
-        self.lstm_output_dim = self.hidden_channels * h * w
-        
-        # 5. Overwrite the MLP Extractors
-        # SB3 creates these based on features_dim. We need them to accept the FLATTENED ConvLSTM output.
-        self.mlp_extractor = self._build_mlp_extractor() # Rebuilds with correct input dim
-        
-        # 6. Force value net to match
-        self.value_net = nn.Linear(self.mlp_extractor.latent_dim_vf, 1)
 
-    def _build_mlp_extractor(self):
-        """Helper to rebuild the MLP part (Actor/Critic heads) to match ConvLSTM output."""
+        # 4. Add adaptive pooling to ensure fixed output size
+        self.adaptive_pool = nn.AdaptiveAvgPool2d(self.pool_output_size)
+
+        # Note: super().__init__ already created mlp_extractor and value_net
+        # with the correct dimensions based on lstm_hidden_size
+        # We need to recreate it with pooled_dim
+        self._build_mlp_extractor()
+
+    def _build_mlp_extractor(self) -> None:
+        """
+        Create a new MLP extractor using pooled_dim as input instead of lstm_hidden_size.
+        This is necessary because SB3's default uses lstm_hidden_size for the MLP input.
+        """
         from stable_baselines3.common.torch_layers import MlpExtractor
-        return MlpExtractor(
-            feature_dim=self.lstm_output_dim, # Input is flattened ConvLSTM output
+
+        self.mlp_extractor = MlpExtractor(
+            self.pooled_dim,  # Use pooled dimension, not lstm_hidden_size
             net_arch=self.net_arch,
             activation_fn=self.activation_fn,
-            device=self.device
+            device=self.device,
         )
+
+    def _get_features_dim(self) -> int:
+        """Override to return the pooled dimension after adaptive pooling."""
+        return self.pooled_dim
+
+    # Note: We don't override evaluate_actions - let SB3 handle the sequence processing
+    # The base class will call our _process_sequence with the right shapes
+
+    def predict_values(
+        self,
+        obs: torch.Tensor,
+        lstm_states: RNNStates,
+        episode_starts: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Get the estimated values according to the current policy given the observations.
+        Overridden to handle spatial feature extraction for ConvLSTM.
+        """
+        # Same preprocessing as get_distribution
+        if obs.dim() == 3:
+            obs = obs.unsqueeze(0)
+
+        if obs.dim() == 4:
+            obs = obs.unsqueeze(1)
+            if episode_starts.dim() == 1:
+                episode_starts = episode_starts.unsqueeze(1)
+
+        B, T, C, H, W = obs.shape
+
+        # Extract CNN features
+        img_flat = obs.view(B * T, C, H, W)
+        features = self.features_extractor(img_flat)
+
+        # Reshape to sequence
+        features = features.view(
+            B,
+            T,
+            self.features_extractor.out_channels,
+            self.features_extractor.h,
+            self.features_extractor.w,
+        )
+
+        # Process through ConvLSTM
+        latent_vf, _ = self._process_sequence(features, lstm_states, episode_starts, None)
+
+        # Value head
+        last_features = latent_vf[:, -1]
+        latent_vf = self.mlp_extractor.forward_critic(last_features)
+        return self.value_net(latent_vf)
+
+    def get_distribution(
+        self,
+        obs: torch.Tensor,
+        lstm_states: RNNStates,
+        episode_starts: torch.Tensor,
+    ):
+        """
+        Get the current policy distribution given the observations.
+        Overridden to handle spatial feature extraction for ConvLSTM.
+        """
+        # Observations come as (B, C, H, W) or (B*T, C, H, W)
+        if obs.dim() == 3:
+            # Add batch dimension
+            obs = obs.unsqueeze(0)
+
+        if obs.dim() == 4:
+            # Single timestep: (B, C, H, W) -> (B, 1, C, H, W)
+            obs = obs.unsqueeze(1)
+            # episode_starts should also be 2D: (B, T)
+            if episode_starts.dim() == 1:
+                episode_starts = episode_starts.unsqueeze(1)
+
+        B, T, C, H, W = obs.shape
+
+        # Extract CNN features for all timesteps
+        img_flat = obs.view(B * T, C, H, W)
+        features = self.features_extractor(img_flat)
+
+        # Reshape back to sequence: (B, T, C_out, H_out, W_out)
+        features = features.view(
+            B,
+            T,
+            self.features_extractor.out_channels,
+            self.features_extractor.h,
+            self.features_extractor.w,
+        )
+
+        # Process through ConvLSTM
+        latent_features, next_lstm_states = self._process_sequence(features, lstm_states, episode_starts, None)
+
+        # MLP head
+        last_features = latent_features[:, -1]
+        latent_pi = self.mlp_extractor.forward_actor(last_features)
+        return self._get_action_dist_from_latent(latent_pi), next_lstm_states
 
     def _process_sequence(self, features, lstm_states, episode_starts, lstm=None):
         """
         Custom sequence processing for ConvLSTM.
-        features: (Batch, Seq_Len, C_in, H, W)  <-- Output of CNN
-        lstm_states: Tuple(h, c) each of shape (Num_Layers, Batch, Flat_Hidden_Dim)
+        features: Can be either:
+                  - (B, T, C, H, W) - already has time dimension
+                  - (B, C, H, W) - needs time dimension added
+        lstm_states: RNNStates or Tuple(h, c) each of shape (Num_Layers, Batch, Flat_Hidden_Dim)
         """
+        # Handle both 4D and 5D features
+        if features.dim() == 4:
+            # Add time dimension: (B, C, H, W) -> (B, 1, C, H, W)
+            features = features.unsqueeze(1)
+            if episode_starts.dim() == 1:
+                episode_starts = episode_starts.unsqueeze(1)
+        # Handle RNNStates format from SB3
+        if isinstance(lstm_states, RNNStates):
+            # Extract policy states (we use the same for both pi and vf)
+            h_flat, c_flat = lstm_states.pi
+        else:
+            h_flat, c_flat = lstm_states
+
         # 1. Unpack Dimensions
-        n_layers, n_samples, _ = lstm_states[0].shape
+        n_layers, n_samples_state, _ = h_flat.shape
+        B = features.size(0)  # Actual batch size from features
         T = features.size(1) # Time dimension
         H, W = self.spatial_shape
-        
+
         # 2. Reshape States: (Layers, Batch, Flat) -> List of (Batch, C, H, W)
         # We need a list of (h, c) tuples for the StackedConvLSTM
         current_states = []
-        h_flat, c_flat = lstm_states
-        
+
+        # Handle batch size mismatch between states and features
+        batch_size_to_use = B if n_samples_state != B else n_samples_state
+
         for i in range(n_layers):
             # Extract layer i, reshape to 4D
-            h = h_flat[i].view(n_samples, self.hidden_channels, H, W)
-            c = c_flat[i].view(n_samples, self.hidden_channels, H, W)
+            h = h_flat[i].view(batch_size_to_use, self.hidden_channels, H, W)
+            c = c_flat[i].view(batch_size_to_use, self.hidden_channels, H, W)
             current_states.append((h, c))
 
         # 3. Iterate over Time (T)
@@ -210,25 +335,34 @@ class ConvLSTMPolicy(RecurrentActorCriticPolicy):
         for t in range(T):
             # Input for this timestep: (Batch, C_in, H, W)
             input_t = features[:, t]
-            
+
             # Handle Masking (Reset state if episode starts)
             # episode_starts is (Batch, Seq_Len)
             if episode_starts[:, t].any():
-                mask = (~episode_starts[:, t].bool()).view(n_samples, 1, 1, 1)
-                
-                # Apply mask to ALL layers in the stack
-                masked_states = []
-                for (h, c) in current_states:
-                    masked_states.append((h * mask, c * mask))
-                current_states = masked_states
+                # Get actual batch size from input and states
+                actual_batch_size = input_t.size(0)
+                state_batch_size = current_states[0][0].size(0)
+
+                # Only apply mask if batch sizes match
+                # During training, SB3 might pass different batch dimensions
+                if actual_batch_size == state_batch_size:
+                    mask = (~episode_starts[:, t].bool()).view(actual_batch_size, 1, 1, 1)
+
+                    # Apply mask to ALL layers in the stack
+                    masked_states = []
+                    for (h, c) in current_states:
+                        masked_states.append((h * mask, c * mask))
+                    current_states = masked_states
 
             # Forward pass through Stacked ConvLSTM
             # returns: output_t (Batch, C_out, H, W), new_states (List of tuples)
             output_t, current_states = self.lstm_conv(input_t, current_states)
-            
-            # Flatten output spatial dims: (Batch, C*H*W)
-            # We must flatten here because the Actor/Critic MLPs expect 1D vectors
-            lstm_outputs.append(output_t.flatten(start_dim=1))
+
+            # Apply adaptive pooling for fixed-size output regardless of spatial dims
+            pooled_t = self.adaptive_pool(output_t)  # (Batch, C, pool_h, pool_w)
+
+            # Flatten pooled output: (Batch, C*pool_h*pool_w)
+            lstm_outputs.append(pooled_t.flatten(start_dim=1))
 
         # 4. Re-pack States for SB3
         # Convert List of (Batch, C, H, W) back to (Layers, Batch, Flat)
@@ -241,12 +375,15 @@ class ConvLSTMPolicy(RecurrentActorCriticPolicy):
         # Stack layers: (Layers, Batch, Flat)
         final_h = torch.stack(new_h_list, dim=0)
         final_c = torch.stack(new_c_list, dim=0)
-        
+
         # 5. Prepare Output
         # (Batch, Seq_Len, Features)
         lstm_outputs = torch.stack(lstm_outputs, dim=1)
-        
-        return lstm_outputs, (final_h, final_c)
+
+        # Return RNNStates with pi and vf attributes
+        # We use the same state for both policy and value networks
+        new_states = RNNStates(pi=(final_h, final_c), vf=(final_h, final_c))
+        return lstm_outputs, new_states
 
     def forward(self, obs: torch.Tensor, lstm_states: Tuple[torch.Tensor, torch.Tensor], episode_starts: torch.Tensor, deterministic: bool = False):
         """
@@ -256,14 +393,17 @@ class ConvLSTMPolicy(RecurrentActorCriticPolicy):
         if obs.dim() == 4:
             # Add sequence dim -> (Batch, 1, C, H, W)
             obs = obs.unsqueeze(1)
-            
+            # episode_starts should also be 2D: (B, T)
+            if episode_starts.dim() == 1:
+                episode_starts = episode_starts.unsqueeze(1)
+
         B, T, C, H, W = obs.shape
-        
+
         # 1. CNN Feature Extraction
         # Flatten Batch and Time to pass through CNN: (B*T, C, H, W)
         img_flat = obs.view(B * T, C, H, W)
         features = self.features_extractor(img_flat)
-        
+
         # Reshape back to sequence: (B, T, C_out, H_out, W_out)
         features = features.view(B, T, self.features_extractor.out_channels, self.features_extractor.h, self.features_extractor.w)
 
@@ -278,7 +418,7 @@ class ConvLSTMPolicy(RecurrentActorCriticPolicy):
         # Distribution
         latent_pi = self.mlp_extractor.forward_actor(last_features)
         distribution = self._get_action_dist_from_latent(latent_pi)
-        
+
         # Value
         latent_vf = self.mlp_extractor.forward_critic(last_features)
         values = self.value_net(latent_vf)
@@ -287,7 +427,7 @@ class ConvLSTMPolicy(RecurrentActorCriticPolicy):
             actions = distribution.mode()
         else:
             actions = distribution.sample()
-            
+
         log_prob = distribution.log_prob(actions)
 
         return actions, values, log_prob, next_lstm_states

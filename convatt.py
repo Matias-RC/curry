@@ -7,6 +7,7 @@ from typing import Tuple, List
 
 from sb3_contrib.common.recurrent.policies import RecurrentActorCriticPolicy
 from sb3_contrib import RecurrentPPO
+from sb3_contrib.common.recurrent.type_aliases import RNNStates
 
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 
@@ -27,6 +28,7 @@ class ConvConfig:
             padding=self.padding
         )
 
+# Recives: (B, M, C, H, W) output: (B, M, C, H, W)
 class ConvAttLayer(nn.Module):
     def  __init__(self, working_channels, qk_dim, kernel_size):
         super(ConvAttLayer, self).__init__()
@@ -55,15 +57,26 @@ class ConvAttLayer(nn.Module):
         keys_linear = self.k_linear(keys_pooled)
 
         # Compute attention scores and causal mask
-        scores = torch.matmul(queries_linear, keys_linear.transpose(-2, -1)) / self.scale.to(x.device)
+        # queries_linear, keys_linear: (B, M, qk_dim)
+        scores = torch.matmul(queries_linear, keys_linear.transpose(-2, -1)) / self.scale.to(x.device)  # (B, M, M)
         mask = torch.tril(torch.ones(M, M)).to(x.device)
         scores = scores.masked_fill(mask == 0, -1e9)
-        attn = F.softmax(scores, dim=-1)
-        # Apply attention to values while preserving spatial dimensions
-        out = torch.matmul(attn, values.view(B, M, -1, H * W).permute(0, 1, 3, 2))
-        out = out.permute(0, 1, 3, 2).view(B, M, -1, H, W)
-        return out # (B, M, C, H, W)
+        attn = F.softmax(scores, dim=-1)  # (B, M, M)
 
+        # Apply attention to values while preserving spatial dimensions
+        # values: (B, M, C, H, W) -> reshape to (B, M, C*H*W)
+        B_v, M_v, C_v, H_v, W_v = values.shape
+        values_flat = values.view(B, M, -1)  # (B, M, C*H*W)
+
+        # attn: (B, M, M) @ values_flat: (B, M, C*H*W) -> (B, M, C*H*W)
+        out_flat = torch.matmul(attn, values_flat)  # (B, M, C*H*W)
+
+        # Reshape back to spatial
+        out = out_flat.view(B, M, C_v, H_v, W_v)  # (B, M, C, H, W)
+        return out
+
+# Receives: x: (B, C, H, W), h: (B, M-1, C, H, W)
+# Outputs: (B, M, C, H, W)
 class ConvAttResidualRNNCell(nn.Module):
     # h_t = h_t-1 + ConvAtt([x_t;h_t-1])
     def __init__(self, working_channels, qk_dim, kernel_size):
@@ -73,11 +86,18 @@ class ConvAttResidualRNNCell(nn.Module):
                                      kernel_size=kernel_size)
     def forward(self, x, h):
         # x: (B, C, H, W)
-        # h: (B, M-1, C, H, W) (External logic manages length M)
-        B, C, H, W = x.size()
-        h_combined = torch.cat([x.unsqueeze(1), h], dim=1)  # (B, M, C, H, W)
-        return self.conv_att(h_combined)
+        # h: (B, M, C, H, W) for memory state
+        if x.dim() != 4:
+            raise ValueError(f"Unexpected x shape: {x.shape}, expected 4D tensor (B, C, H, W). Got {x.dim()}D tensor.")
+        if h.dim() != 5:
+            raise ValueError(f"Unexpected h shape: {h.shape}, expected 5D tensor (B, M, C, H, W). Got {h.dim()}D tensor.")
 
+        B, C, H, W = x.size()
+        h_combined = torch.cat([x.unsqueeze(1), h], dim=1)  # (B, M+1, C, H, W)
+        return h_combined + self.conv_att(h_combined)
+
+# Receives: x: (B, C, H, W), states: List of (B, M-1, C, H, W)
+# Outputs: (B, C, H, W), List of (B, M-1, C, H, W)
 class StackedConvAtt(nn.Module):
     """
     Manages a stack of ConvAttResidualRNN cells.
@@ -90,22 +110,20 @@ class StackedConvAtt(nn.Module):
         self.memory_size = memory_size
         self.hidden_channels = hidden_channels
 
-        for i in range(stack_size):
-            # First layer takes input_channels, subsequent layers take hidden_channels
-            in_ch = input_channels if i == 0 else hidden_channels
-            # Projection to match hidden_channels if needed
-            if in_ch != hidden_channels:
-                self.input_proj = nn.Conv2d(in_ch, hidden_channels, kernel_size=1)
-            else:
-                self.input_proj = nn.Identity()
+        # Input projection (only for first layer if needed)
+        if input_channels != hidden_channels:
+            self.input_proj = nn.Conv2d(input_channels, hidden_channels, kernel_size=1)
+        else:
+            self.input_proj = nn.Identity()
 
+        for i in range(stack_size):
             self.layers.append(
                 ConvAttResidualRNNCell(hidden_channels, qk_dim, kernel_size)
             )
 
     def forward(self, x: torch.Tensor, states: List[torch.Tensor]) -> Tuple[torch.Tensor, List[torch.Tensor]]:
         # x shape: (Batch, Channel, H, W)
-        # states: List of tensors (B, M-1, C, H, W), one per layer
+        # states: List of tensors (B, M, C, H, W), one per layer
 
         next_states = []
         current_input = x
@@ -115,16 +133,22 @@ class StackedConvAtt(nn.Module):
             if i == 0:
                 current_input = self.input_proj(current_input)
 
-            h = states[i]  # (B, M-1, C, H, W)
+            h = states[i]  # (B, M, C, H, W)
 
             # Feed current input into layer
-            # Returns (B, M, C, H, W) where M includes new timestep
+            # Returns (B, M+1, C, H, W) where M includes new timestep
             att_output = layer(current_input, h)
+
+            if att_output.dim() != 5:
+                raise ValueError(f"Layer {i} att_output has wrong shape: {att_output.shape}, expected 5D (B, M, C, H, W)")
 
             # Take the last output along the memory dimension
             next_h = att_output[:, -1]  # (B, C, H, W)
 
-            # Update state: keep last (M-1) frames for next step
+            if next_h.dim() != 4:
+                raise ValueError(f"Layer {i} next_h has wrong shape: {next_h.shape}, expected 4D (B, C, H, W). att_output shape was {att_output.shape}")
+
+            # Update state: keep last M frames for next step
             if att_output.size(1) > self.memory_size:
                 new_state = att_output[:, -(self.memory_size):, :, :, :]
             else:
@@ -138,16 +162,14 @@ class StackedConvAtt(nn.Module):
         # Return final layer output and all new states
         return current_input, next_states
 
-# ==========================================
-# Feature Extractor
-# ==========================================
-
+# Receives raw images, applies CNN to downsample
+# Outputs feature maps
 class ConvFeatureExtractor(BaseFeaturesExtractor):
     """
     Standard CNN to downsample image before ConvAtt.
     """
     def __init__(self, observation_space: Box, conv_configs: list):
-        super().__init__(observation_space, features_dim=1)  # dim is dummy here, calculated below
+        super().__init__(observation_space, features_dim=1)  # temporary placeholder
 
         layers = []
         for cfg in conv_configs:
@@ -155,189 +177,356 @@ class ConvFeatureExtractor(BaseFeaturesExtractor):
             layers.append(nn.ReLU())
         self.cnn = nn.Sequential(*layers)
 
-        # Calculate output shape
+        # Infer output shape
+        # After VecTransposeImage, observation_space.shape is (C, H, W)
         with torch.no_grad():
             dummy = torch.zeros((1, *observation_space.shape))
             out = self.cnn(dummy)
             self.out_channels, self.h, self.w = out.shape[1:]
-            self.features_dim = self.out_channels * self.h * self.w
+
+        self._features_dim = self.out_channels * self.h * self.w
 
     def forward(self, obs: torch.Tensor) -> torch.Tensor:
-        return self.cnn(obs)
+        return self.cnn(obs.to(torch.float32))
 
-# ==========================================
-# The Policy
-# ==========================================
 
+# Recieves images, passes through CNN + ConvAtt + Pooling + MLP heads
+# Outputs actions and values
 class ConvAttPolicy(RecurrentActorCriticPolicy):
-    def __init__(self, observation_space, action_space, lr_schedule, config, **kwargs):
-        # We need to initialize with dummy values then override
-        self.config = config
+    def __init__(self, observation_space, action_space, lr_schedule, **kwargs):
+        # ---- extract custom config BEFORE super ----
+        self.config = kwargs.pop("config")
+
+        conv_configs_params = self.config["conv_configs"]
+        conv_configs = [ConvConfig(**params) for params in conv_configs_params]
+
+        self.hidden_channels = self.config["hidden_channels"]
+        self.qk_dim = self.config.get("qk_dim", 64)
+        kernel_size = self.config["kernel_size"]
+        self.stack_size = self.config.get("stack_size", 1)
+        self.memory_size = self.config.get("memory_size", 4)
+        self.pool_output_size = self.config.get("pool_output_size", (2, 2))
+
+        pooled_h, pooled_w = self.pool_output_size
+        self.pooled_dim = self.hidden_channels * pooled_h * pooled_w
+
+        # Calculate the state dimension that will be used
+        # We need to know the spatial dimensions after CNN, so we need to compute them first
+        # Temporarily create feature extractor to get dimensions
+        temp_extractor = ConvFeatureExtractor(observation_space, conv_configs)
+        h = temp_extractor.h
+        w = temp_extractor.w
+
+        # State dimension: memory_size * hidden_channels * H * W
+        lstm_hidden_size = self.memory_size * self.hidden_channels * h * w
+
+        # ---- let SB3 construct everything ----
+        kwargs['lstm_hidden_size'] = lstm_hidden_size
+        kwargs['n_lstm_layers'] = self.stack_size
         super().__init__(observation_space, action_space, lr_schedule, **kwargs)
 
-        # 1. Extract Config
-        conv_configs = config['conv_configs']
-        self.hidden_channels = config['hidden_channels']
-        self.qk_dim = config.get('qk_dim', 64)
-        kernel_size = config['kernel_size']
-        self.stack_size = config.get("stack_size", 1)
-        self.memory_size = config.get("memory_size", 4)
-        self.pool_output_size = config.get("pool_output_size", (2, 2))
+        # ---- override feature extractor (safe after super) ----
+        self.features_extractor = ConvFeatureExtractor(
+            observation_space, conv_configs
+        )
 
-        # 2. Re-Initialize Feature Extractor
-        self.features_extractor = ConvFeatureExtractor(observation_space, conv_configs)
-
-        # Get shapes after CNN
         c = self.features_extractor.out_channels
         h = self.features_extractor.h
         w = self.features_extractor.w
         self.spatial_shape = (h, w)
-        self.cnn_output_dim = c * h * w
 
-        # 3. Initialize Stacked ConvAtt
-        self.att_conv = StackedConvAtt(c, self.hidden_channels, self.qk_dim, kernel_size, self.stack_size, self.memory_size)
-
-        # 4. Adaptive Pooling Layer
-        # Pool the last hidden state features (position M) to reduce dimensionality
-        self.adaptive_pool = nn.AdaptiveAvgPool2d(self.pool_output_size)
-
-        # Calculate pooled dimension
-        pooled_h, pooled_w = self.pool_output_size
-        self.pooled_dim = self.hidden_channels * pooled_h * pooled_w
-
-        # 5. Overwrite the MLP Extractors
-        # SB3 creates these based on features_dim. We need them to accept the pooled features
-        self.mlp_extractor = self._build_mlp_extractor()
-
-        # 6. Force value net to match
-        self.value_net = nn.Linear(self.mlp_extractor.latent_dim_vf, 1)
-
-    def _build_mlp_extractor(self):
-        """Helper to rebuild the MLP part (Actor/Critic heads) to match pooled features."""
-        from stable_baselines3.common.torch_layers import MlpExtractor
-        return MlpExtractor(
-            feature_dim=self.pooled_dim,  # Input is pooled features from last hidden state
-            net_arch=self.net_arch,
-            activation_fn=self.activation_fn,
-            device=self.device
+        # ---- ConvAtt core ----
+        self.att_conv = StackedConvAtt(
+            c,
+            self.hidden_channels,
+            self.qk_dim,
+            kernel_size,
+            self.stack_size,
+            self.memory_size,
         )
 
-    def _process_sequence(self, features, att_states, episode_starts, lstm=None):
+        self.adaptive_pool = nn.AdaptiveAvgPool2d(self.pool_output_size)
+
+        # Set LSTM hidden state shape for SB3 compatibility
+        # Shape: (n_layers, 1, flattened_state_dim)
+        state_dim = self.memory_size * self.hidden_channels * h * w
+        self.lstm_hidden_state_shape = (self.stack_size, 1, state_dim)
+
+        # Override the MLP extractor to use pooled_dim instead of lstm_hidden_size
+        # SB3 creates MLP with lstm_hidden_size, but we output pooled_dim
+        self._build_mlp_extractor()
+
+    # ------------------------------------------------------------------
+    # Build MLP extractor with correct input dimensions
+    # ------------------------------------------------------------------
+    def _build_mlp_extractor(self) -> None:
         """
-        Custom sequence processing for ConvAtt.
-        features: (Batch, Seq_Len, C_in, H, W)  <-- Output of CNN
-        att_states: Tuple containing a tensor of shape (Num_Layers, Batch, Memory_Size * C * H * W)
-
-        Returns pooled features from the last position (M) in the attention memory.
+        Create a new MLP extractor using pooled_dim as input instead of lstm_hidden_size.
+        This is necessary because SB3's default uses lstm_hidden_size for the MLP input.
         """
-        # 1. Unpack Dimensions
-        n_layers, n_samples, flat_dim = att_states[0].shape
-        T = features.size(1)  # Time dimension
-        H, W = self.spatial_shape
+        from stable_baselines3.common.torch_layers import MlpExtractor
 
-        # 2. Reshape States: (Layers, Batch, Flat) -> List of (Batch, M, C, H, W)
-        current_states = []
-        h_flat = att_states[0]
+        self.mlp_extractor = MlpExtractor(
+            self.pooled_dim,  # Use pooled dimension, not lstm_hidden_size
+            net_arch=self.net_arch,
+            activation_fn=self.activation_fn,
+            device=self.device,
+        )
 
-        for i in range(n_layers):
-            # Extract layer i, reshape to 5D
-            # flat_dim = Memory_Size * C * H * W
-            state_i = h_flat[i].view(n_samples, self.memory_size, self.hidden_channels, H, W)
-            current_states.append(state_i)
+    # ------------------------------------------------------------------
+    # SB3 hook: this is THE fix
+    # ------------------------------------------------------------------
+    def _get_features_dim(self) -> int:
+        return self.pooled_dim
 
-        # 3. Iterate over Time (T)
-        pooled_outputs = []
-        for t in range(T):
-            # Input for this timestep: (Batch, C_in, H, W)
-            input_t = features[:, t]
+    # Note: We don't override evaluate_actions - let SB3 handle the sequence processing
+    # The base class will call our _process_sequence with the right shapes
 
-            # Handle Masking (Reset state if episode starts)
-            if episode_starts[:, t].any():
-                mask = (~episode_starts[:, t].bool()).view(n_samples, 1, 1, 1, 1)
-
-                # Apply mask to ALL layers in the stack
-                masked_states = []
-                for state in current_states:
-                    masked_states.append(state * mask)
-                current_states = masked_states
-
-            # Forward pass through Stacked ConvAtt
-            # returns: output_t (Batch, C_out, H, W), new_states (List of tensors (B, M, C, H, W))
-            output_t, current_states = self.att_conv(input_t, current_states)
-
-            # Extract the last layer's full hidden state (most informed position M)
-            # current_states[-1] has shape (B, M, C, H, W)
-            last_layer_state = current_states[-1]  # (B, M, C, H, W)
-
-            # Take the last position (M) which is the most informed due to causal masking
-            last_position = last_layer_state[:, -1]  # (B, C, H, W)
-
-            # Apply adaptive pooling to reduce spatial dimensions
-            pooled = self.adaptive_pool(last_position)  # (B, C, pooled_h, pooled_w)
-
-            # Flatten: (B, C * pooled_h * pooled_w)
-            pooled_flat = pooled.flatten(start_dim=1)
-            pooled_outputs.append(pooled_flat)
-
-        # 4. Re-pack States for SB3
-        # Convert List of (Batch, M, C, H, W) back to (Layers, Batch, Flat)
-        new_h_list = []
-        for state in current_states:
-            new_h_list.append(state.flatten(start_dim=1))
-
-        # Stack layers: (Layers, Batch, Flat)
-        final_h = torch.stack(new_h_list, dim=0)
-
-        # 5. Prepare Output
-        # (Batch, Seq_Len, Pooled_Features)
-        pooled_outputs = torch.stack(pooled_outputs, dim=1)
-
-        return pooled_outputs, (final_h,)
-
-    def forward(self, obs: torch.Tensor, lstm_states: Tuple[torch.Tensor], episode_starts: torch.Tensor, deterministic: bool = False):
+    # ------------------------------------------------------------------
+    # Override predict_values to properly extract spatial features
+    # ------------------------------------------------------------------
+    def predict_values(
+        self,
+        obs: torch.Tensor,
+        lstm_states: RNNStates,
+        episode_starts: torch.Tensor,
+    ) -> torch.Tensor:
         """
-        Forward pass override.
-        The MLP heads receive pooled features from the last position (M) in the attention memory,
-        which is the most informed due to causal masking.
+        Get the estimated values according to the current policy given the observations.
+        Overridden to handle spatial feature extraction for ConvAtt.
         """
-        # obs might be (Batch, C, H, W) or (Batch, Seq, C, H, W)
+        # Same preprocessing as get_distribution
+        if obs.dim() == 3:
+            obs = obs.unsqueeze(0)
+
         if obs.dim() == 4:
-            # Add sequence dim -> (Batch, 1, C, H, W)
             obs = obs.unsqueeze(1)
+            if episode_starts.dim() == 1:
+                episode_starts = episode_starts.unsqueeze(1)
 
         B, T, C, H, W = obs.shape
 
-        # 1. CNN Feature Extraction
-        # Flatten Batch and Time to pass through CNN: (B*T, C, H, W)
+        # Extract CNN features
+        img_flat = obs.view(B * T, C, H, W)
+        features = self.features_extractor(img_flat)
+
+        # Reshape to sequence
+        features = features.view(
+            B,
+            T,
+            self.features_extractor.out_channels,
+            self.features_extractor.h,
+            self.features_extractor.w,
+        )
+
+        # Process through ConvAtt
+        latent_vf, _ = self._process_sequence(features, lstm_states, episode_starts, None)
+
+        # Value head
+        latent_vf = self.mlp_extractor.forward_critic(latent_vf[:, -1])
+        return self.value_net(latent_vf)
+
+    # ------------------------------------------------------------------
+    # Override get_distribution to properly extract spatial features
+    # ------------------------------------------------------------------
+    def get_distribution(
+        self,
+        obs: torch.Tensor,
+        lstm_states,
+        episode_starts: torch.Tensor,
+    ):
+        """
+        Get the current policy distribution given the observations.
+        Overridden to handle spatial feature extraction for ConvAtt.
+        """
+        # Observations come as (B, C, H, W) or (B*T, C, H, W)
+        if obs.dim() == 3:
+            # Add batch dimension
+            obs = obs.unsqueeze(0)
+
+        if obs.dim() == 4:
+            # Single timestep: (B, C, H, W) -> (B, 1, C, H, W)
+            obs = obs.unsqueeze(1)
+            # episode_starts should also be 2D: (B, T)
+            if episode_starts.dim() == 1:
+                episode_starts = episode_starts.unsqueeze(1)
+
+        B, T, C, H, W = obs.shape
+
+        # Extract CNN features for all timesteps
         img_flat = obs.view(B * T, C, H, W)
         features = self.features_extractor(img_flat)
 
         # Reshape back to sequence: (B, T, C_out, H_out, W_out)
-        features = features.view(B, T, self.features_extractor.out_channels,
-                                self.features_extractor.h, self.features_extractor.w)
+        features = features.view(
+            B,
+            T,
+            self.features_extractor.out_channels,
+            self.features_extractor.h,
+            self.features_extractor.w,
+        )
 
-        # 2. ConvAtt Processing
-        # Returns: pooled_features (B, T, Pooled_Dim) from last position in memory, new_states
-        pooled_features, next_att_states = self._process_sequence(features, lstm_states, episode_starts)
+        # Process through ConvAtt
+        latent_pi, lstm_states = self._process_sequence(features, lstm_states, episode_starts, None)
 
-        # 3. Take only the last timestep for Action/Value (Standard SB3 behavior for forward)
-        last_pooled_features = pooled_features[:, -1]  # (B, Pooled_Dim)
+        # MLP head
+        latent_pi = self.mlp_extractor.forward_actor(latent_pi[:, -1])
+        return self._get_action_dist_from_latent(latent_pi), lstm_states
 
-        # 4. Actor / Critic
-        # Distribution
-        latent_pi = self.mlp_extractor.forward_actor(last_pooled_features)
+    # ------------------------------------------------------------------
+    # ConvAtt sequence processing
+    # ------------------------------------------------------------------
+    def _process_sequence(self, features, att_states, episode_starts, lstm=None):
+        """
+        features: Can be either:
+                  - (B, T, C, H, W) - already has time dimension
+                  - (B, C, H, W) - needs time dimension added
+        att_states: RNNStates or tuple of (h_flat, c_flat) where h_flat is (n_layers, B, memory_size * hidden_channels * H * W)
+                   c_flat is unused but kept for SB3 compatibility
+        lstm parameter is unused, kept for SB3 compatibility
+        """
+        # Handle both 4D and 5D features
+        if features.dim() == 4:
+            # Add time dimension: (B, C, H, W) -> (B, 1, C, H, W)
+            features = features.unsqueeze(1)
+            if episode_starts.dim() == 1:
+                episode_starts = episode_starts.unsqueeze(1)
+        # Handle RNNStates format from SB3
+        if isinstance(att_states, RNNStates):
+            # Extract policy states (we use the same for both pi and vf)
+            h_flat = att_states.pi[0]
+        elif isinstance(att_states, tuple):
+            h_flat = att_states[0]
+            # Check if it's nested tuples
+            if isinstance(h_flat, tuple):
+                h_flat = h_flat[0]
+        else:
+            h_flat = att_states
+
+        n_layers, n_samples_state, flat_dim = h_flat.size()
+        B = features.size(0)  # Actual batch size from features
+        T = features.size(1)
+        H, W = self.spatial_shape
+
+        # Verify the flat dimension matches our expectation
+        expected_flat = self.memory_size * self.hidden_channels * H * W
+
+        if flat_dim != expected_flat:
+            raise ValueError(
+                f"State dimension mismatch! "
+                f"Got flat_dim={flat_dim}, expected {expected_flat}. "
+                f"h_flat shape: {h_flat.shape}, "
+                f"memory_size={self.memory_size}, hidden_channels={self.hidden_channels}, "
+                f"H={H}, W={W}, n_layers={n_layers}, n_samples_state={n_samples_state}"
+            )
+
+        current_states = []
+
+        # Always use n_samples_state for reshaping - it's the correct batch dimension from states
+        for i in range(n_layers):
+            state_i = h_flat[i].view(
+                n_samples_state,
+                self.memory_size,
+                self.hidden_channels,
+                H,
+                W,
+            )
+            current_states.append(state_i)
+
+        pooled_outputs = []
+
+        for t in range(T):
+            input_t = features[:, t]
+
+            if input_t.dim() != 4:
+                raise ValueError(f"input_t at timestep {t} has wrong shape: {input_t.shape}, expected 4D (B, C, H, W). features shape: {features.shape}")
+
+            # Handle episode starts - supports both 1D and 2D tensors
+            if episode_starts.dim() == 1:
+                episode_start_t = episode_starts
+            else:
+                episode_start_t = episode_starts[:, t]
+
+            if episode_start_t.any():
+                # Get actual batch size from features and states
+                actual_batch_size = input_t.size(0)
+                state_batch_size = current_states[0].size(0)
+
+                # Only apply mask if batch sizes match
+                # During training, SB3 might pass different batch dimensions
+                if actual_batch_size == state_batch_size:
+                    mask = (~episode_start_t.bool()).view(
+                        actual_batch_size, 1, 1, 1, 1
+                    )
+                    current_states = [s * mask for s in current_states]
+
+            _, current_states = self.att_conv(input_t, current_states)
+
+            last_layer_state = current_states[-1]
+            last_position = last_layer_state[:, -1]
+
+            pooled = self.adaptive_pool(last_position)
+            pooled_outputs.append(pooled.flatten(start_dim=1))
+
+        new_h = torch.stack(
+            [s.flatten(start_dim=1) for s in current_states], dim=0
+        )
+
+        pooled_outputs = torch.stack(pooled_outputs, dim=1)
+
+        # SB3 expects RNNStates with pi and vf attributes
+        # We use the same state for both policy and value networks
+        new_states = RNNStates(pi=(new_h, new_h), vf=(new_h, new_h))
+        return pooled_outputs, new_states
+
+    # ------------------------------------------------------------------
+    # Forward (SB3 recurrent API)
+    # ------------------------------------------------------------------
+    def forward(
+        self,
+        obs: torch.Tensor,
+        lstm_states,
+        episode_starts: torch.Tensor,
+        deterministic: bool = False,
+    ):
+        if obs.dim() == 4:
+            obs = obs.unsqueeze(1)
+            # episode_starts should also be 2D: (B, T)
+            if episode_starts.dim() == 1:
+                episode_starts = episode_starts.unsqueeze(1)
+
+        B, T, C, H, W = obs.shape
+
+        img_flat = obs.view(B * T, C, H, W)
+        features = self.features_extractor(img_flat)
+
+        features = features.view(
+            B,
+            T,
+            self.features_extractor.out_channels,
+            self.features_extractor.h,
+            self.features_extractor.w,
+        )
+
+        pooled_features, next_states = self._process_sequence(
+            features, lstm_states, episode_starts
+        )
+
+        last_features = pooled_features[:, -1]
+
+        latent_pi = self.mlp_extractor.forward_actor(last_features)
+        latent_vf = self.mlp_extractor.forward_critic(last_features)
+
         distribution = self._get_action_dist_from_latent(latent_pi)
-
-        # Value
-        latent_vf = self.mlp_extractor.forward_critic(last_pooled_features)
         values = self.value_net(latent_vf)
 
-        if deterministic:
-            actions = distribution.mode()
-        else:
-            actions = distribution.sample()
+        actions = (
+            distribution.mode()
+            if deterministic
+            else distribution.sample()
+        )
 
         log_prob = distribution.log_prob(actions)
 
-        return actions, values, log_prob, next_att_states
+        return actions, values, log_prob, next_states
 
