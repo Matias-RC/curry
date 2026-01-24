@@ -116,3 +116,11 @@ def main():
 
 if __name__ == "__main__":
     main()
+"""
+TO BE FIXED:
+
+        distribution = self._get_action_dist_from_latent(latent_pi)
+        log_prob = distribution.log_prob(actions)
+        values = self.value_net(latent_vf)
+        return values, log_prob, distribution.entropy()
+"""

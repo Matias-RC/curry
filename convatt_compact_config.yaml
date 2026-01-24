@@ -9,5 +9,5 @@ config:
   qk_dim: 32
   kernel_size: 3
   stack_size: 1
-  memory_size: 3
+  memory_size: 1
   pool_output_size: [2, 2]

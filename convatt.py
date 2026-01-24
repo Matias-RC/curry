@@ -403,8 +403,7 @@ class ConvAttPolicy(RecurrentActorCriticPolicy):
         if features.dim() == 4:
             # Add time dimension: (B, C, H, W) -> (B, 1, C, H, W)
             features = features.unsqueeze(1)
-            if episode_starts.dim() == 1:
-                episode_starts = episode_starts.unsqueeze(1)
+
         # Handle RNNStates format from SB3
         if isinstance(att_states, RNNStates):
             # Extract policy states (we use the same for both pi and vf)
@@ -421,7 +420,8 @@ class ConvAttPolicy(RecurrentActorCriticPolicy):
         B = features.size(0)  # Actual batch size from features
         T = features.size(1)
         H, W = self.spatial_shape
-
+        if episode_starts.dim() == 1:
+            episode_starts = episode_starts.view(T, B).transpose(0, 1)
         # Verify the flat dimension matches our expectation
         expected_flat = self.memory_size * self.hidden_channels * H * W
 
@@ -433,7 +433,9 @@ class ConvAttPolicy(RecurrentActorCriticPolicy):
                 f"memory_size={self.memory_size}, hidden_channels={self.hidden_channels}, "
                 f"H={H}, W={W}, n_layers={n_layers}, n_samples_state={n_samples_state}"
             )
-
+        if n_samples_state != B:
+            h_flat = h_flat.new_zeros(n_layers, B, flat_dim)
+            n_samples_state = B
         current_states = []
 
         # Always use n_samples_state for reshaping - it's the correct batch dimension from states
@@ -448,7 +450,8 @@ class ConvAttPolicy(RecurrentActorCriticPolicy):
             current_states.append(state_i)
 
         pooled_outputs = []
-
+        if T == 38:
+            print("aye")
         for t in range(T):
             input_t = features[:, t]
 
@@ -464,15 +467,11 @@ class ConvAttPolicy(RecurrentActorCriticPolicy):
             if episode_start_t.any():
                 # Get actual batch size from features and states
                 actual_batch_size = input_t.size(0)
-                state_batch_size = current_states[0].size(0)
 
-                # Only apply mask if batch sizes match
-                # During training, SB3 might pass different batch dimensions
-                if actual_batch_size == state_batch_size:
-                    mask = (~episode_start_t.bool()).view(
-                        actual_batch_size, 1, 1, 1, 1
-                    )
-                    current_states = [s * mask for s in current_states]
+                mask = (~episode_start_t.bool()).view(
+                    actual_batch_size, 1, 1, 1, 1
+                )
+                current_states = [s * mask for s in current_states]
 
             _, current_states = self.att_conv(input_t, current_states)
 
