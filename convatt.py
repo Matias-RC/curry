@@ -187,7 +187,21 @@ class ConvFeatureExtractor(BaseFeaturesExtractor):
         self._features_dim = self.out_channels * self.h * self.w
 
     def forward(self, obs: torch.Tensor) -> torch.Tensor:
-        return self.cnn(obs.to(torch.float32))
+        if obs.dim() == 5:
+            # obs: (B, T, C, H, W)
+            B, T, C, H, W = obs.shape
+            obs = obs.view(B * T, C, H, W)
+
+            out = self.cnn(obs.to(torch.float32))
+            # out: (B*T, C', H', W')
+
+            # restore time dimension
+            C2, H2, W2 = out.shape[1:]
+            out = out.view(B, T, C2, H2, W2)
+
+            return out
+        else:
+            return self.cnn(obs.to(torch.float32))
 
 
 # Recieves images, passes through CNN + ConvAtt + Pooling + MLP heads
