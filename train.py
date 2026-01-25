@@ -5,7 +5,7 @@ from argparse import ArgumentParser
 
 from stable_baselines3.common.monitor import Monitor
 from custom_recurrent_ppo import CustomRecurrentPPO
-
+from sb3_contrib import RecurrentPPO
 def parse_args():
     parser = ArgumentParser(description="Train RL agent on Sokoban environment with ConvLSTM or ConvAtt policies")
 
@@ -16,7 +16,7 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
 
     # Training arguments
-    parser.add_argument("--total-timesteps", type=int, default=100, help="Total training timesteps")
+    parser.add_argument("--total-timesteps", type=int, default=10_000_000, help="Total training timesteps")
     parser.add_argument("--learning-rate", type=float, default=3e-4, help="Learning rate for the optimizer")
     parser.add_argument("--batch-size", type=int, default=64, help="Batch size for training")
     
@@ -83,7 +83,7 @@ def main():
 
     # Initialize Custom RecurrentPPO (uses SequenceAwareRolloutBuffer)
     if args.algo == "RecurrentPPO":
-        model = CustomRecurrentPPO(
+        model = RecurrentPPO(
             policy_class,
             env_registered,
             learning_rate=args.learning_rate,
@@ -113,14 +113,5 @@ def main():
     model.save(model_name)
     print(f"\nTraining complete! Model saved as: {model_name}.zip")
 
-
 if __name__ == "__main__":
     main()
-"""
-TO BE FIXED:
-
-        distribution = self._get_action_dist_from_latent(latent_pi)
-        log_prob = distribution.log_prob(actions)
-        values = self.value_net(latent_vf)
-        return values, log_prob, distribution.entropy()
-"""
