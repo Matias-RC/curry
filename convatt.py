@@ -450,8 +450,7 @@ class ConvAttPolicy(RecurrentActorCriticPolicy):
             current_states.append(state_i)
 
         pooled_outputs = []
-        if T == 38:
-            print("aye")
+
         for t in range(T):
             input_t = features[:, t]
 
