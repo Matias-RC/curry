@@ -42,6 +42,8 @@ class ConvAttLayer(nn.Module):
 
         self.scale = torch.sqrt(torch.FloatTensor([qk_dim]))
 
+
+
     def forward(self, x):
         B, M, C, H, W = x.size()
         # Reshape input for convolution then back to original shape
@@ -84,6 +86,9 @@ class ConvAttResidualRNNCell(nn.Module):
         self.conv_att = ConvAttLayer(working_channels=working_channels,
                                      qk_dim=qk_dim,
                                      kernel_size=kernel_size)
+        self.norm1 = nn.LazyInstanceNorm2d(working_channels)
+        self.norm2 = nn.LazyInstanceNorm2d(working_channels)
+        self.out_conv = nn.Conv2d(working_channels, working_channels, kernel_size=3, padding=1)
     def forward(self, x, h):
         # x: (B, C, H, W)
         # h: (B, M, C, H, W) for memory state
@@ -94,7 +99,12 @@ class ConvAttResidualRNNCell(nn.Module):
 
         B, C, H, W = x.size()
         h_combined = torch.cat([x.unsqueeze(1), h], dim=1)  # (B, M+1, C, H, W)
-        return h_combined + self.conv_att(h_combined)
+        h_combined = self.norm1(h_combined.view(B * (h_combined.size(1)), C, H, W)).view(B, h_combined.size(1), C, H, W)
+        out = h_combined + self.conv_att(h_combined)
+        out = self.norm2(out.view(B * out.size(1), C, H, W)).view(B, out.size(1), C, H, W)
+        out = self.out_conv(out.view(B * out.size(1), C, H, W)).view(B, out.size(1), C, H, W)
+        out = F.relu(out)
+        return out
 
 # Receives: x: (B, C, H, W), states: List of (B, M-1, C, H, W)
 # Outputs: (B, C, H, W), List of (B, M-1, C, H, W)
@@ -203,6 +213,30 @@ class ConvFeatureExtractor(BaseFeaturesExtractor):
         else:
             return self.cnn(obs.to(torch.float32))
 
+class AlternativeConvFeatureExtractor(BaseFeaturesExtractor):
+    def __init__(self, observation_space: Box):
+        super().__init__(observation_space, features_dim=1)
+        # Hardcoded for temporal simlicity
+        conv_configs = [
+            ConvConfig(in_channels=observation_space.shape[0], out_channels=32, kernel_size=3, stride=1, padding=1),
+            ConvConfig(in_channels=32, out_channels=64, kernel_size=3, stride=1, padding=1),
+            ConvConfig(in_channels=64, out_channels=64, kernel_size=3, stride=1, padding=1),
+        ]
+        pool_tuple = (2, 2)
+        
+        layers = []
+        for cfg in conv_configs:
+            layers.append(cfg.make())
+            layers.append(nn.ReLU())
+        self.cnn = nn.Sequential(*layers)
+        C = conv_configs[-1].out_channels
+        self.adaptive_pool = nn.AdaptiveAvgPool2d(pool_tuple)
+        self._features_dim = C * pool_tuple[0] * pool_tuple[1]
+    def forward(self, obs: torch.Tensor) -> torch.Tensor:
+        x = self.cnn(obs.to(torch.float32))
+        x = self.adaptive_pool(x)
+        x = torch.flatten(x, start_dim=1)
+        return x
 
 # Recieves images, passes through CNN + ConvAtt + Pooling + MLP heads
 # Outputs actions and values
