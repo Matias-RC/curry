@@ -43,10 +43,17 @@ class SokobanCompactWrapper(gym.ObservationWrapper):
 
                 # Goal (yellow-ish, but not player)
                 elif r == 238:
+                    new_rgb = obs[pixel_i - 4, pixel_j - 4]
+                    _, new_g, _ = new_rgb
+                    if new_g == 114:
+                        grid_obs[1, i, j] = 1.0
                     grid_obs[2, i, j] = 1.0
 
                 # Player (green-ish)
                 elif r == 41 and g == 202 and b == 26:
+                    new_rgb = obs[pixel_i - 7, pixel_j - 7]
+                    new_r, _, _ = new_rgb
+                    if new_r == 238:
+                        grid_obs[2, i, j] = 1.0
                     grid_obs[3, i, j] = 1.0
-
         return grid_obs
