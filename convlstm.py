@@ -241,7 +241,7 @@ class ConvLSTMPolicy(RecurrentActorCriticPolicy):
         latent_vf, _ = self._process_sequence(features, lstm_states, episode_starts, None)
 
         # Value head
-        last_features = latent_vf[:, -1]
+        last_features = latent_vf
         latent_vf = self.mlp_extractor.forward_critic(last_features)
         return self.value_net(latent_vf)
 
@@ -286,24 +286,21 @@ class ConvLSTMPolicy(RecurrentActorCriticPolicy):
         latent_features, next_lstm_states = self._process_sequence(features, lstm_states, episode_starts, None)
 
         # MLP head
-        last_features = latent_features[:, -1]
+        last_features = latent_features[-1]
         latent_pi = self.mlp_extractor.forward_actor(last_features)
+        if latent_pi.dim() == 1:
+            latent_pi = latent_pi.unsqueeze(0)
+            next_lstm_states = RNNStates(pi=torch.stack(tuple(s.unsqueeze(0) for s in next_lstm_states.pi)),
+                                         vf=torch.stack(tuple(s.unsqueeze(0) for s in next_lstm_states.vf)))
         return self._get_action_dist_from_latent(latent_pi), next_lstm_states
 
     def _process_sequence(self, features, lstm_states, episode_starts, lstm=None):
-        """
-        Custom sequence processing for ConvLSTM.
-        features: Can be either:
-                  - (B, T, C, H, W) - already has time dimension
-                  - (B, C, H, W) - needs time dimension added
-        lstm_states: RNNStates or Tuple(h, c) each of shape (Num_Layers, Batch, Flat_Hidden_Dim)
-        """
         # Handle both 4D and 5D features
         if features.dim() == 4:
-            # Add time dimension: (B, C, H, W) -> (B, 1, C, H, W)
-            features = features.unsqueeze(1)
+            # Add time dimension: (T, C, H, W) -> (1, T, C, H, W)
+            features = features.unsqueeze(0)
             if episode_starts.dim() == 1:
-                episode_starts = episode_starts.unsqueeze(1)
+                episode_starts = episode_starts.unsqueeze(0)
         # Handle RNNStates format from SB3
         if isinstance(lstm_states, RNNStates):
             # Extract policy states (we use the same for both pi and vf)
@@ -326,8 +323,8 @@ class ConvLSTMPolicy(RecurrentActorCriticPolicy):
 
         for i in range(n_layers):
             # Extract layer i, reshape to 4D
-            h = h_flat[i].view(batch_size_to_use, self.hidden_channels, H, W)
-            c = c_flat[i].view(batch_size_to_use, self.hidden_channels, H, W)
+            h = h_flat[:, i].view(batch_size_to_use, self.hidden_channels, H, W)
+            c = c_flat[:, i].view(batch_size_to_use, self.hidden_channels, H, W)
             current_states.append((h, c))
 
         # 3. Iterate over Time (T)
@@ -380,6 +377,10 @@ class ConvLSTMPolicy(RecurrentActorCriticPolicy):
         # (Batch, Seq_Len, Features)
         lstm_outputs = torch.stack(lstm_outputs, dim=1)
 
+        # ---- FLATTEN FOR SB3 ----
+        B, T, F = lstm_outputs.shape
+        lstm_outputs = lstm_outputs.reshape(B * T, F)
+
         # Return RNNStates with pi and vf attributes
         # We use the same state for both policy and value networks
         new_states = RNNStates(pi=(final_h, final_c), vf=(final_h, final_c))
@@ -412,7 +413,7 @@ class ConvLSTMPolicy(RecurrentActorCriticPolicy):
         latent_features, next_lstm_states = self._process_sequence(features, lstm_states, episode_starts)
 
         # 3. Take only the last timestep for Action/Value (Standard SB3 behavior for forward)
-        last_features = latent_features[:, -1] # (B, Flat_Dim)
+        last_features = latent_features
 
         # 4. Actor / Critic
         # Distribution
