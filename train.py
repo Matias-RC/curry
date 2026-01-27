@@ -4,7 +4,6 @@ import os
 from argparse import ArgumentParser
 
 from stable_baselines3.common.monitor import Monitor
-from custom_recurrent_ppo import CustomRecurrentPPO
 from sb3_contrib import RecurrentPPO
 def parse_args():
     parser = ArgumentParser(description="Train RL agent on Sokoban environment with ConvLSTM or ConvAtt policies")
@@ -17,7 +16,7 @@ def parse_args():
 
     # Training arguments
     parser.add_argument("--total-timesteps", type=int, default=10_000_000, help="Total training timesteps")
-    parser.add_argument("--learning-rate", type=float, default=3e-4, help="Learning rate for the optimizer")
+    parser.add_argument("--learning-rate", type=float, default=1e-3, help="Learning rate for the optimizer")
     parser.add_argument("--batch-size", type=int, default=64, help="Batch size for training")
     
     # Config file path
@@ -70,6 +69,8 @@ def main():
     elif args.policy == "ConvLSTMPolicy":
         from convlstm import ConvLSTMPolicy
         policy_class = ConvLSTMPolicy
+    elif args.policy == "GenericRecurrentPolicy":
+        policy_class = "CnnLstmPolicy"
     else:
         raise ValueError(f"Unsupported policy architecture: {args.policy}")
 
@@ -93,6 +94,19 @@ def main():
             seed=args.seed,
             verbose=1,
             policy_kwargs=config_kwargs,
+        )
+    elif args.algo == "GenericRecurrentPPO":
+        from convatt import AlternativeConvFeatureExtractor
+        model = RecurrentPPO(
+            policy_class,
+            env_registered,
+            learning_rate=args.learning_rate,
+            batch_size=args.batch_size,
+            tensorboard_log=args.tensorboard_log,
+            device=args.device,
+            seed=args.seed,
+            verbose=1,
+            policy_kwargs={"features_extractor_class": AlternativeConvFeatureExtractor},
         )
     else:
         raise ValueError(f"Unsupported RL algorithm: {args.algo}")
