@@ -31,8 +31,8 @@ class SokobanEnv(gym.Env):
         # Penalties and Rewards
         self.penalty_for_step = -0.1
         self.penalty_box_off_target = -1
-        self.reward_box_on_target = 1
-        self.reward_finished = 10
+        self.reward_box_on_target = +1
+        self.reward_finished = +10
         self.reward_last = 0
 
         # Other Settings

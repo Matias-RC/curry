@@ -15,7 +15,7 @@ class SokobanCompactWrapper(gym.ObservationWrapper):
         # New observation space: (4, grid_h, grid_w) - channels first for PyTorch
         self.observation_space = Box(
             low=0, high=1,
-            shape=(4, self.grid_h, self.grid_w),
+            shape=(4,self.grid_h,self.grid_w,),
             dtype=np.float32
         )
 
