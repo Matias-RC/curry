@@ -43,7 +43,7 @@ class HumanRenderCallback(BaseCallback):
         done = False
         truncated = False
         SCALE = 4
-        H, W = 112, 112
+        H, W = 96, 96
 
         screen = pygame.display.set_mode((W*SCALE, H*SCALE))
         clock = pygame.time.Clock()
@@ -99,8 +99,8 @@ class HumanRenderCallback(BaseCallback):
 
 def make_train_env(seed=42):
     env = SokobanEnv(
-        dim_room=(7, 7),
-        max_steps=100,
+        dim_room=(6, 6),
+        max_steps=16,
         num_boxes=1,
         render_mode="rgb_array",
     )
@@ -112,8 +112,8 @@ def make_train_env(seed=42):
 
 def make_eval_env(seed=123):
     env = SokobanEnv(
-        dim_room=(7, 7),
-        max_steps=120,
+        dim_room=(6, 6),
+        max_steps=16,
         num_boxes=1,
         render_mode="rgb_array",
     )
@@ -128,15 +128,15 @@ def make_eval_env(seed=123):
 # ============================================================
 
 # Feature Extractor Settings
-EXTRACTOR_POOL_SIZE = (8, 8)  # Force spatial dims to 8x8
-LAST_CONV_CHANNELS = 64       # The channels output by your last conv layer
+EXTRACTOR_POOL_SIZE = (6, 6)  # Force spatial dims to 8x8
+LAST_CONV_CHANNELS = 128      # The channels output by your last conv layer
 
 # ConvLSTM Settings
-LSTM_HIDDEN_CHANNELS = 64     # How many channels the LSTM maintains internally
+LSTM_HIDDEN_CHANNELS = 128     # How many channels the LSTM maintains internally
 
 # PoolReduce (Post-LSTM) Settings
 # We will pool the LSTM output (8x8) down to (2,2) before the final heads
-FINAL_POOL_SIZE = (2, 2)
+FINAL_POOL_SIZE = (3, 3)
 FINAL_EMBEDDING_SIZE = 256    # Size of the vector entering the Actor/Critic MLP
 
 # --- 2. Create the Config Dictionary ---
@@ -150,7 +150,8 @@ policy_kwargs = {
             "adaptive_pool_size": EXTRACTOR_POOL_SIZE,
             "conv_configs": [
                 # Example Architecture:
-                {'out_channels': 32, 'kernel_size': 5, 'stride': 1, 'padding': 1},
+                {'out_channels': 32, 'kernel_size': 3, 'stride': 1, 'padding': 1},
+                {'out_channels': 64, 'kernel_size': 3, 'stride': 1, 'padding': 1},
                 {'out_channels': LAST_CONV_CHANNELS, 'kernel_size': 3, 'stride': 1, 'padding': 1},
             ]
         }
@@ -171,7 +172,7 @@ policy_kwargs = {
         
         # Internal LSTM Dimensions
         "hidden_size": LSTM_HIDDEN_CHANNELS,   # 64
-        "num_layers": 1,
+        "num_layers": 2,
         
         # Post-Processing (PoolReduce)
         # This sits between the LSTM and the final Actor/Critic heads
@@ -188,7 +189,9 @@ policy_kwargs = {
                 # Linear layer after pooling: 
                 # Input: 64 channels * 2 * 2 = 256
                 # Output: FINAL_EMBEDDING_SIZE = 256
-                (LSTM_HIDDEN_CHANNELS * FINAL_POOL_SIZE[0] * FINAL_POOL_SIZE[1], FINAL_EMBEDDING_SIZE)
+                (LSTM_HIDDEN_CHANNELS * FINAL_POOL_SIZE[0] * FINAL_POOL_SIZE[1], FINAL_EMBEDDING_SIZE),
+                (FINAL_EMBEDDING_SIZE, FINAL_EMBEDDING_SIZE),
+                (FINAL_EMBEDDING_SIZE, FINAL_EMBEDDING_SIZE),
             ]
         }
     },
@@ -207,13 +210,13 @@ if __name__ == "__main__":
 
     train_env = make_train_env(seed=SEED)
     eval_env = make_eval_env(seed=SEED + 1)
-
-    render_callback = HumanRenderCallback(
-        eval_env=eval_env,
-        render_every_steps=5000,
-        max_steps=200,
-        deterministic=True,
-    )
+#
+    #render_callback = HumanRenderCallback(
+    #    eval_env=eval_env,
+    #    render_every_steps=500,
+    #    max_steps=200,
+    #    deterministic=False,
+    #)
 
     model = RecurrentPPO(
         CustomConvLSTMPolicy,
@@ -224,16 +227,19 @@ if __name__ == "__main__":
         seed=SEED,
     )
 
+    #model.learn(
+    #    total_timesteps=2_000,
+    #    callback=render_callback,
+    #)
     model.learn(
-        total_timesteps=2000000,
-        callback=render_callback,
+        total_timesteps=160_000,
     )
     print("===Training Finished===")
     pygame.init()
 
 
     SCALE = 4
-    H, W = 112, 112
+    H, W = 96, 96
 
     screen = pygame.display.set_mode((W*SCALE, H*SCALE))
     clock = pygame.time.Clock()
@@ -249,9 +255,7 @@ if __name__ == "__main__":
             if event.type == pygame.QUIT:
                 running = False
         if terminated or truncated:
-            obs, _ = eval_env.reset(
-                seed=np.random.randint(0, 10_000)
-            )
+            obs, _ = eval_env.reset()
             terminated = False
             truncated = False
         else:
