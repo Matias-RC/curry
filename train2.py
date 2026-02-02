@@ -1,5 +1,3 @@
-# train_with_human_render.py
-
 import time
 import numpy as np
 import gymnasium as gym
@@ -11,15 +9,11 @@ from sb3_contrib import RecurrentPPO
 from sb3_contrib.common.recurrent.policies import RecurrentActorCriticPolicy
 
 from gym_sokoban.envs import SokobanEnv
-from sokoban_wrapper import SokobanCompactWrapper
+from sokoban_wrapper import SokobanCompactWrapper, SokobanRetriesWrapper
 
 import numpy as np
 import pygame
 import pygame.surfarray as surfarray
-
-# ============================================================
-# 1. Validation Callback (Recurrent-safe, Human Render)
-# ============================================================
 
 class HumanRenderCallback(BaseCallback):
     def __init__(
@@ -92,29 +86,11 @@ class HumanRenderCallback(BaseCallback):
         pygame.quit()   
         return True
 
-
-# ============================================================
-# 2. Environment Builders
-# ============================================================
-
-def make_train_env(seed=42):
-    env = SokobanEnv(
-        dim_room=(5, 5),
-        max_steps=10,
-        num_boxes=1,
-        render_mode="rgb_array",
-    )
-    env = SokobanCompactWrapper(env)
-    env = Monitor(env)
-    env.reset(seed=seed)
-    return env
-
-
-def make_eval_env(seed=123):
-    env = SokobanEnv(
-        dim_room=(5, 5),
-        max_steps=100,
-        num_boxes=1,
+def make_env(dim_room, max_steps, num_boxes,seed=42):
+    env = SokobanRetriesWrapper(
+        dim_room=dim_room,
+        max_steps=max_steps,
+        num_boxes=num_boxes,
         render_mode="rgb_array",
     )
     env = SokobanCompactWrapper(env)
@@ -153,19 +129,33 @@ policy_kwargs = dict(
 
 if __name__ == "__main__":
     SEED = 42
+    DIM_ROOM = (5,5)
+    MAX_STEPS = 10
+    MAX_STEPS_EVAL = 20
+    NUM_BOXES = 1
 
-    train_env = make_train_env(seed=SEED)
-    eval_env = make_eval_env(seed=SEED + 1)
-#
+    train_env = make_env(dim_room=DIM_ROOM,
+                               max_steps=MAX_STEPS,
+                               num_boxes=NUM_BOXES,   
+                               seed=SEED)
+    eval_env = make_env(dim_room=DIM_ROOM,
+                               max_steps=MAX_STEPS_EVAL,
+                               num_boxes=NUM_BOXES,   
+                               seed=SEED+1)
+
+# Currently not at use
     #render_callback = HumanRenderCallback(
     #    eval_env=eval_env,
     #    render_every_steps=500,
     #    max_steps=200,
     #    deterministic=False,
     #)
+    from maple_ppo import MAPLE_RecurrentPPO
+    from consolidator_class import Consolidator
 
-    model = RecurrentPPO(
+    model = MAPLE_RecurrentPPO(
         RecurrentActorCriticPolicy,
+        Consolidator,
         train_env,
         policy_kwargs=policy_kwargs,
         verbose=1,
@@ -179,7 +169,7 @@ if __name__ == "__main__":
     #    callback=render_callback,
     #)
     model.learn(
-        total_timesteps=80_000,
+        total_timesteps=1000,
     )
     print("===Training Finished===")
     pygame.init()

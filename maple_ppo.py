@@ -17,6 +17,7 @@ from sb3_contrib.common.recurrent.policies import RecurrentActorCriticPolicy
 from sb3_contrib.common.recurrent.type_aliases import RNNStates
 from sb3_contrib.ppo_recurrent.policies import CnnLstmPolicy, MlpLstmPolicy, MultiInputLstmPolicy
 
+from consolidator_class import Consolidator
 
 from sb3_contrib.ppo_recurrent.ppo_recurrent import RecurrentPPO
 
@@ -77,10 +78,136 @@ class MAPLE_RecurrentPPO(RecurrentPPO):
             device,
             _init_setup_model,
         )
+        self.consolidator_class = consolidator
+        self._setup_consolidator()
+
     
     def _setup_consolidator(self):
-        self.consolidator = None
+        self.consolidator:Consolidator = self.consolidator_class()
         pass
+
+    def _update_learning_rate(self, policy_optimizer, consolidator_optimizer) -> None:
+        print("Dummy logic, HELLO, Im forgetting the consolidator optimizer")
+
+        super()._update_learning_rate(policy_optimizer)
+
+
+    def collect_rollouts(
+        self,
+        env: VecEnv,
+        callback: BaseCallback,
+        rollout_buffer: RolloutBuffer,
+        n_rollout_steps: int,
+    ) -> bool:
+        """
+        Collect experiences using the current policy and fill a ``RolloutBuffer``.
+        The term rollout here refers to the model-free notion and should not
+        be used with the concept of rollout used in model-based RL or planning.
+
+        :param env: The training environment
+        :param callback: Callback that will be called at each step
+            (and at the beginning and end of the rollout)
+        :param rollout_buffer: Buffer to fill with rollouts
+        :param n_steps: Number of experiences to collect per environment
+        :return: True if function returned with at least `n_rollout_steps`
+            collected, False if callback terminated rollout prematurely.
+        """
+        assert isinstance(
+            rollout_buffer, (RecurrentRolloutBuffer, RecurrentDictRolloutBuffer)
+        ), f"{rollout_buffer} doesn't support recurrent policy"
+
+        assert self._last_obs is not None, "No previous observation was provided"
+        # Switch to eval mode (this affects batch norm / dropout)
+        self.policy.set_training_mode(False)
+
+        n_steps = 0
+        rollout_buffer.reset()
+        # Sample new weights for the state dependent exploration
+        if self.use_sde:
+            self.policy.reset_noise(env.num_envs)
+
+        callback.on_rollout_start()
+
+        lstm_states = deepcopy(self._last_lstm_states)
+
+        while n_steps < n_rollout_steps:
+            if self.use_sde and self.sde_sample_freq > 0 and n_steps % self.sde_sample_freq == 0:
+                # Sample a new noise matrix
+                self.policy.reset_noise(env.num_envs)
+
+            with th.no_grad():
+                # Convert to pytorch tensor or to TensorDict
+                obs_tensor = obs_as_tensor(self._last_obs, self.device)
+                episode_starts = th.tensor(self._last_episode_starts, dtype=th.float32, device=self.device)
+                actions, values, log_probs, lstm_states = self.policy.forward(obs_tensor, lstm_states, episode_starts)
+
+            actions = actions.cpu().numpy()
+
+            # Rescale and perform action
+            clipped_actions = actions
+            # Clip the actions to avoid out of bound error
+            if isinstance(self.action_space, spaces.Box):
+                clipped_actions = np.clip(actions, self.action_space.low, self.action_space.high)
+
+            new_obs, rewards, dones, infos = env.step(clipped_actions)
+
+            self.num_timesteps += env.num_envs
+
+            # Give access to local variables
+            callback.update_locals(locals())
+            if not callback.on_step():
+                return False
+
+            self._update_info_buffer(infos, dones)
+            n_steps += 1
+
+            if isinstance(self.action_space, spaces.Discrete):
+                # Reshape in case of discrete action
+                actions = actions.reshape(-1, 1)
+
+            # Handle timeout by bootstraping with value function
+            # see GitHub issue #633
+            for idx, done_ in enumerate(dones):
+                if (
+                    done_
+                    and infos[idx].get("terminal_observation") is not None
+                    and infos[idx].get("TimeLimit.truncated", False)
+                ):
+                    terminal_obs = self.policy.obs_to_tensor(infos[idx]["terminal_observation"])[0]
+                    with th.no_grad():
+                        terminal_lstm_state = (
+                            lstm_states.vf[0][:, idx : idx + 1, :].contiguous(),
+                            lstm_states.vf[1][:, idx : idx + 1, :].contiguous(),
+                        )
+                        # terminal_lstm_state = None
+                        episode_starts = th.tensor([False], dtype=th.float32, device=self.device)
+                        terminal_value = self.policy.predict_values(terminal_obs, terminal_lstm_state, episode_starts)[0]
+                    rewards[idx] += self.gamma * terminal_value
+
+            rollout_buffer.add(
+                self._last_obs,
+                actions,
+                rewards,
+                self._last_episode_starts,
+                values,
+                log_probs,
+                lstm_states=self._last_lstm_states,
+            )
+
+            self._last_obs = new_obs
+            self._last_episode_starts = dones
+            self._last_lstm_states = lstm_states
+
+        with th.no_grad():
+            # Compute value for the last timestep
+            episode_starts = th.tensor(dones, dtype=th.float32, device=self.device)
+            values = self.policy.predict_values(obs_as_tensor(new_obs, self.device), lstm_states.vf, episode_starts)
+
+        rollout_buffer.compute_returns_and_advantage(last_values=values, dones=dones)
+
+        callback.on_rollout_end()
+
+        return True
     
     def train(self) -> None:
         """
@@ -88,8 +215,10 @@ class MAPLE_RecurrentPPO(RecurrentPPO):
         """
         # Switch to train mode (this affects batch norm / dropout)
         self.policy.set_training_mode(True)
+        self.consolidator.set_training_mode(True)
+
         # Update optimizer learning rate
-        self._update_learning_rate(self.policy.optimizer)
+        self._update_learning_rate(self.policy.optimizer, self.consolidator.optimizer)
         # Compute current clip range
         clip_range = self.clip_range(self._current_progress_remaining)
         # Optional: clip range for the value function
@@ -117,82 +246,6 @@ class MAPLE_RecurrentPPO(RecurrentPPO):
 
                 values, log_prob, entropy = self.policy.evaluate_actions(
                     rollout_data.observations,
-                    actions,
-                    rollout_data.lstm_states,
-                    rollout_data.episode_starts,
-                )
-
-                values = values.flatten()
-                # Normalize advantage
-                advantages = rollout_data.advantages
-                if self.normalize_advantage:
-                    advantages = (advantages - advantages[mask].mean()) / (advantages[mask].std() + 1e-8)
-
-                # ratio between old and new policy, should be one at the first iteration
-                ratio = th.exp(log_prob - rollout_data.old_log_prob)
-
-                # clipped surrogate loss
-                policy_loss_1 = advantages * ratio
-                policy_loss_2 = advantages * th.clamp(ratio, 1 - clip_range, 1 + clip_range)
-                policy_loss = -th.mean(th.min(policy_loss_1, policy_loss_2)[mask])
-
-                # Logging
-                pg_losses.append(policy_loss.item())
-                clip_fraction = th.mean((th.abs(ratio - 1) > clip_range).float()[mask]).item()
-                clip_fractions.append(clip_fraction)
-
-                if self.clip_range_vf is None:
-                    # No clipping
-                    values_pred = values
-                else:
-                    # Clip the different between old and new value
-                    # NOTE: this depends on the reward scaling
-                    values_pred = rollout_data.old_values + th.clamp(
-                        values - rollout_data.old_values, -clip_range_vf, clip_range_vf
-                    )
-                # Value loss using the TD(gae_lambda) target
-                # Mask padded sequences
-                value_loss = th.mean(((rollout_data.returns - values_pred) ** 2)[mask])
-
-                value_losses.append(value_loss.item())
-
-                # Entropy loss favor exploration
-                if entropy is None:
-                    # Approximate entropy when no analytical form
-                    entropy_loss = -th.mean(-log_prob[mask])
-                else:
-                    entropy_loss = -th.mean(entropy[mask])
-
-                entropy_losses.append(entropy_loss.item())
-
-                loss = policy_loss + self.ent_coef * entropy_loss + self.vf_coef * value_loss
-
-                # Calculate approximate form of reverse KL Divergence for early stopping
-                # see issue #417: https://github.com/DLR-RM/stable-baselines3/issues/417
-                # and discussion in PR #419: https://github.com/DLR-RM/stable-baselines3/pull/419
-                # and Schulman blog: http://joschu.net/blog/kl-approx.html
-                with th.no_grad():
-                    log_ratio = log_prob - rollout_data.old_log_prob
-                    approx_kl_div = th.mean(((th.exp(log_ratio) - 1) - log_ratio)[mask]).cpu().numpy()
-                    approx_kl_divs.append(approx_kl_div)
-
-                if self.target_kl is not None and approx_kl_div > 1.5 * self.target_kl:
-                    continue_training = False
-                    if self.verbose >= 1:
-                        print(f"Early stopping at step {epoch} due to reaching max kl: {approx_kl_div:.2f}")
-                    break
-
-                # Optimization step
-                self.policy.optimizer.zero_grad()
-                loss.backward()
-                # Clip grad norm
-                th.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
-                self.policy.optimizer.step()
-
-                observations  = self.consolidator.update_observations(rollout_data.observations)
-
-                values, log_prob, entropy = self.policy.evaluate_actions(
-                    observations,
                     actions,
                     rollout_data.lstm_states,
                     rollout_data.episode_starts,

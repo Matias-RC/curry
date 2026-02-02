@@ -1,6 +1,7 @@
 import gymnasium as gym
 import numpy as np
 from gymnasium.spaces import Box
+from gym_sokoban.envs import SokobanEnv
 
 
 class SokobanCompactWrapper(gym.ObservationWrapper):
@@ -57,3 +58,13 @@ class SokobanCompactWrapper(gym.ObservationWrapper):
                         grid_obs[2, i, j] = 1.0
                     grid_obs[3, i, j] = 1.0
         return grid_obs
+
+class SokobanRetriesWrapper(SokobanEnv):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fixed_rooms_container = []
+        self.initial_states_container = []
+    
+    def save_state(self) -> None:
+        self.fixed_rooms_container.append(self.room_fixed.copy())
+        self.initial_states_container.append(self.initial_states_container.copy())
