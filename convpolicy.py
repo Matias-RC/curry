@@ -132,42 +132,27 @@ class CustomConvLSTMPolicy(RecurrentActorCriticPolicy):
             lstm_kwargs,
         )
 
-        # 2. Parse Custom Configs
         self.conv_lstm_kwargs = conv_lstm_kwargs or {}
         
-        # Extract shapes to calculate the actual flattened hidden state size
-        # Expected format in conv_lstm_kwargs: {'feature_shape': (H, W), 'hidden_size': Channels, 'input_size': Channels}
         c_hidden = self.conv_lstm_kwargs.get("hidden_size")
         c_shape = self.conv_lstm_kwargs.get("feature_shape")
         
-        # Calculate size: Channels * H * W
         flat_hidden_state_size = c_hidden * c_shape[0] * c_shape[1]
 
-        # 3. Replace the Actor LSTM
-        # We assume self.features_dim (output of features_extractor) matches 
-        # input_size * H * W required by ConvLSTM
         self.lstm_actor = ConvLSTMWrapper(
-            **self.conv_lstm_kwargs  # Passes feature_shape, input_size, hidden_size, etc.
+            **self.conv_lstm_kwargs
         )
 
-        # 4. Handle the Critic LSTM
+        # Handle the Critic LSTM
         if self.enable_critic_lstm:
             self.lstm_critic = ConvLSTMWrapper(
                 **self.conv_lstm_kwargs
             )
         elif not self.shared_lstm:
-             # If strictly separate and no LSTM for critic, the parent class setup 
-             # (Linear layer) is fine, no change needed.
              pass
 
-        # 5. Fix Internal State Shapes
-        # SB3 uses this to initialize zero-tensors for hidden states. 
-        # Your ConvLSTM returns flattened tensors of size (Channels * H * W).
         self.lstm_hidden_state_shape = (n_lstm_layers, 1, flat_hidden_state_size)
 
-        # 6. CRITICAL: Re-initialize the Optimizer
-        # The parent __init__ created the optimizer with the OLD standard LSTM parameters.
-        # We must overwrite it to register the NEW ConvLSTM parameters.
         self.optimizer = self.optimizer_class(
             self.parameters(), 
             lr=lr_schedule(1), 

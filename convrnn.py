@@ -91,7 +91,7 @@ class ConvRNNBase(nn.Module):
                           padding=1,
                           bias=bias)
             else:
-                layer = nn.Conv2d(in_channels=2*hidden_size,
+                layer = nn.Conv2d(in_channels=input_size+2*hidden_size,
                           out_channels=gate_size,
                           kernel_size=3,
                           stride=1,
@@ -103,10 +103,9 @@ class ConvRNNBase(nn.Module):
         self._reset_parameters()
     
     def _reset_parameters(self) -> None:
-        stdv = 1.0/math.sqrt(self.hidden_channels) if self.hidden_channels  > 0  else 0
         for layer in self.layers:
             for weight in layer.parameters():
-                nn.init.uniform_(weight, -stdv, stdv)
+                nn.init.zeros_(weight)
 
 
 class ConvLSTM(ConvRNNBase):
@@ -172,7 +171,7 @@ class ConvLSTM(ConvRNNBase):
                         this_layer_input = feature
                     else:
                         # Use the hidden state from the previous layer
-                        this_layer_input = h_list[jdx-1]
+                        this_layer_input = th.cat([feature, h_list[jdx-1]], dim=1)
 
                     # Use current layer's hidden state
                     gates = layer(th.cat([this_layer_input, h_list[jdx]], dim=1))
@@ -243,6 +242,7 @@ class ConvLSTMWrapper(ConvLSTM):
                 raise NotImplementedError(f"Wrapper mode \'{mode}\' not implemented")
     def forward(self, input, hx=None):
         out, states = super().forward(input, hx)
+        out = input + out
         out = self.postprocess_unit(out)
         return out, states
     

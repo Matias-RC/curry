@@ -289,6 +289,42 @@ class SokobanEnv(gym.Env):
 
     def get_action_meanings(self):
         return ACTION_LOOKUP
+    
+    def configure(
+        self,
+        dim_room=None,
+        num_boxes=None,
+        max_steps=None,
+        num_gen_steps=None,
+    ):
+        """
+        Dynamically update environment parameters.
+        Must only be called between episodes.
+        """
+
+        if dim_room is not None:
+            self.dim_room = dim_room
+
+            # update observation space (pixel-based)
+            h, w = dim_room
+            self.observation_space = Box(
+                low=0,
+                high=255,
+                shape=(h * 16, w * 16, 3),
+                dtype=np.uint8,
+            )
+
+        if num_boxes is not None:
+            self.num_boxes = num_boxes
+
+        if max_steps is not None:
+            self.max_steps = max_steps
+
+        if num_gen_steps is not None:
+            self.num_gen_steps = num_gen_steps
+
+        # force regeneration on next reset
+        self.num_env_steps = 0
 
 
 ACTION_LOOKUP = {

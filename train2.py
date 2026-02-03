@@ -112,7 +112,7 @@ policy_kwargs = dict(
 
     # LSTM config
     lstm_hidden_size=256,
-    n_lstm_layers=1,
+    n_lstm_layers=3,
 
     # Sharing choices
     shared_lstm=False,          # usually more stable
@@ -129,8 +129,8 @@ policy_kwargs = dict(
 
 if __name__ == "__main__":
     SEED = 42
-    DIM_ROOM = (5,5)
-    MAX_STEPS = 10
+    DIM_ROOM = (6,6)
+    MAX_STEPS = 25
     MAX_STEPS_EVAL = 20
     NUM_BOXES = 1
 
@@ -161,22 +161,21 @@ if __name__ == "__main__":
         verbose=1,
         tensorboard_log="./tensorboard/",
         seed=SEED,
-
+        learning_rate=1e-3
     )
-
     #model.learn(
     #    total_timesteps=2_000,
     #    callback=render_callback,
     #)
     model.learn(
-        total_timesteps=1000,
+        total_timesteps=2000,
     )
     print("===Training Finished===")
     pygame.init()
 
 
     SCALE = 4
-    H, W = 80, 80
+    H, W = 96, 96
 
     screen = pygame.display.set_mode((W*SCALE, H*SCALE))
     clock = pygame.time.Clock()

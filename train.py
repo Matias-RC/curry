@@ -10,10 +10,9 @@ from stable_baselines3.common.callbacks import BaseCallback
 from sb3_contrib import RecurrentPPO
 
 from gym_sokoban.envs import SokobanEnv
-from sokoban_wrapper import SokobanCompactWrapper
+from sokoban_wrapper import SokobanCompactWrapper, SokobanCanonicalCompactWrapper
 from convpolicy import ConvFeatureExtractor, CustomConvLSTMPolicy
 
-import numpy as np
 import pygame
 import pygame.surfarray as surfarray
 
@@ -43,28 +42,25 @@ class HumanRenderCallback(BaseCallback):
         done = False
         truncated = False
         SCALE = 4
-        H, W = 96, 96
+        H, W = 80,80
 
         screen = pygame.display.set_mode((W*SCALE, H*SCALE))
         clock = pygame.time.Clock()
 
         # Recurrent state handling
         lstm_states = None
-        episode_starts = np.ones((1,), dtype=bool)
         surface = pygame.Surface((W, H))
         step = 0
         episode_starts = np.array([True])
-        obs, _ = self.eval_env.reset(
-                    seed=np.random.randint(0, 10_000)
-                )
+        obs, _ = self.eval_env.reset()
         while step < self.max_steps:
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     return True
             if done or truncated:
-                obs, _ = self.eval_env.reset(
-                    seed=np.random.randint(0, 10_000)
-                )
+                obs, _ = self.eval_env.reset()
+                lstm_states = None
+                episode_starts = np.array([True])
                 done = False
                 truncated = False
             else:
@@ -77,7 +73,7 @@ class HumanRenderCallback(BaseCallback):
 
                 obs, reward, done, truncated, info = self.eval_env.step(int(action))
 
-            episode_starts = np.array([False])
+                episode_starts = np.array([False])
             rgb = self.eval_env.render()
 
             surfarray.blit_array(surface, rgb.swapaxes(0, 1))
@@ -91,16 +87,42 @@ class HumanRenderCallback(BaseCallback):
         pygame.display.quit()
         pygame.quit()   
         return True
+    
+def curriculum(step):
+    if step < 10_000:
+        return dict(dim_room=(5,5), num_boxes=1, max_steps=8)
+    elif step < 15_000:
+        return dict(dim_room=(5,5), num_boxes=1, max_steps=12)
+    elif step < 30_000:
+        return dict(dim_room=(6,6), num_boxes=1, max_steps=16)
+    else:
+        return dict(dim_room=(6,6), num_boxes=2, max_steps=16)
+    
+class CurriculumCallback(BaseCallback):
+    def __init__(self, schedule_fn=curriculum):
+        super().__init__()
+        self.schedule_fn = schedule_fn
+        self.last_params = schedule_fn(0)
+
+    def _on_step(self):
+        if self.locals["dones"][0]:
+            params = self.schedule_fn(self.num_timesteps)
+
+            if params != self.last_params:
+                env = self.training_env.envs[0]
+                env.unwrapped.configure(**params)
+                self.last_params = params
+        return True
 
 
 # ============================================================
 # 2. Environment Builders
 # ============================================================
 
-def make_train_env(seed=42):
+def make_env(seed=42):
     env = SokobanEnv(
         dim_room=(6, 6),
-        max_steps=16,
+        max_steps=32,
         num_boxes=1,
         render_mode="rgb_array",
     )
@@ -109,35 +131,26 @@ def make_train_env(seed=42):
     env.reset(seed=seed)
     return env
 
-
-def make_eval_env(seed=123):
-    env = SokobanEnv(
-        dim_room=(6, 6),
-        max_steps=16,
-        num_boxes=1,
-        render_mode="rgb_array",
-    )
-    env = SokobanCompactWrapper(env)
+def make_curriculized_env(seed=123):
+    env = SokobanEnv(**curriculum(0), render_mode="rgb_array")
+    env = SokobanCanonicalCompactWrapper(env, (6,6))
     env = Monitor(env)
     env.reset(seed=seed)
     return env
-
-
 # ============================================================
 # 3. Make Hyperparameters
 # ============================================================
 
 # Feature Extractor Settings
-EXTRACTOR_POOL_SIZE = (6, 6)  # Force spatial dims to 8x8
-LAST_CONV_CHANNELS = 128      # The channels output by your last conv layer
-
-# ConvLSTM Settings
-LSTM_HIDDEN_CHANNELS = 128     # How many channels the LSTM maintains internally
+EXTRACTOR_POOL_SIZE = (5, 5)  # Force spatial dims to 8x8
+LAST_CONV_CHANNELS = 64
+LSTM_HIDDEN_CHANNELS = 64
+   # How many channels the LSTM maintains internally
 
 # PoolReduce (Post-LSTM) Settings
 # We will pool the LSTM output (8x8) down to (2,2) before the final heads
 FINAL_POOL_SIZE = (3, 3)
-FINAL_EMBEDDING_SIZE = 256    # Size of the vector entering the Actor/Critic MLP
+FINAL_EMBEDDING_SIZE = 128    # Size of the vector entering the Actor/Critic MLP
 
 # --- 2. Create the Config Dictionary ---
 
@@ -151,6 +164,7 @@ policy_kwargs = {
             "conv_configs": [
                 # Example Architecture:
                 {'out_channels': 32, 'kernel_size': 3, 'stride': 1, 'padding': 1},
+                {'out_channels': 128, 'kernel_size': 3, 'stride': 1, 'padding': 1},
                 {'out_channels': 64, 'kernel_size': 3, 'stride': 1, 'padding': 1},
                 {'out_channels': LAST_CONV_CHANNELS, 'kernel_size': 3, 'stride': 1, 'padding': 1},
             ]
@@ -172,7 +186,7 @@ policy_kwargs = {
         
         # Internal LSTM Dimensions
         "hidden_size": LSTM_HIDDEN_CHANNELS,   # 64
-        "num_layers": 2,
+        "num_layers": 1,
         
         # Post-Processing (PoolReduce)
         # This sits between the LSTM and the final Actor/Critic heads
@@ -208,8 +222,8 @@ policy_kwargs = {
 if __name__ == "__main__":
     SEED = 42
 
-    train_env = make_train_env(seed=SEED)
-    eval_env = make_eval_env(seed=SEED + 1)
+    train_env = make_curriculized_env(seed=SEED)
+    eval_env = make_env(seed=SEED + 1)
 #
     #render_callback = HumanRenderCallback(
     #    eval_env=eval_env,
@@ -217,6 +231,7 @@ if __name__ == "__main__":
     #    max_steps=200,
     #    deterministic=False,
     #)
+    curriculum_callback = CurriculumCallback(curriculum)
 
     model = RecurrentPPO(
         CustomConvLSTMPolicy,
@@ -225,6 +240,7 @@ if __name__ == "__main__":
         verbose=1,
         tensorboard_log="./tensorboard/",
         seed=SEED,
+        learning_rate=1e-3
     )
 
     #model.learn(
@@ -232,14 +248,15 @@ if __name__ == "__main__":
     #    callback=render_callback,
     #)
     model.learn(
-        total_timesteps=160_000,
+        total_timesteps=40_000,
+        callback=curriculum_callback
     )
     print("===Training Finished===")
     pygame.init()
 
 
     SCALE = 4
-    H, W = 96, 96
+    H, W = 96,96
 
     screen = pygame.display.set_mode((W*SCALE, H*SCALE))
     clock = pygame.time.Clock()
@@ -258,6 +275,8 @@ if __name__ == "__main__":
             obs, _ = eval_env.reset()
             terminated = False
             truncated = False
+            lstm_states = None
+            episode_starts = np.array([True])
         else:
             action, lstm_states = model.predict(
                 obs,
