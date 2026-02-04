@@ -10,7 +10,8 @@ class MapleRolloutBuffer(RolloutBuffer):
     Modified rollout buffer that forces n_envs=1 and adds support for adding entire trajectories.
     It also makes sure the size of the buffer matches correctly with the size of a natural buffer.
     """
-    prefixes: np.ndarray
+    actor_prefixes: np.ndarray
+    critic_prefixes: np.ndarray
     def __init__(
         self,
         buffer_size: int,
@@ -42,9 +43,29 @@ class MapleRolloutBuffer(RolloutBuffer):
         self.values = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
         self.log_probs = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
         self.advantages = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
-        self.prefixes = np.zeros((self.buffer_size, self.n_envs, *self.prefix_size))
+        self.actor_prefixes = np.zeros((self.buffer_size, self.n_envs, *self.prefix_size[0]))
+        self.critic_prefixes = np.zeros((self.buffer_size, self.n_envs, *self.prefix_size[1]))
         self.generator_ready = False
         super().reset()
+
+    def expand_by(self, delta: int) -> None:
+        def grow_array(arr):
+            padding_shape = (delta, self.n_envs) + arr.shape[2:]
+            padding = np.zeros(padding_shape, dtype=arr.dtype)
+            return np.concatenate((arr, padding), axis=0)
+
+        self.observations = grow_array(self.observations)
+        self.actions = grow_array(self.actions)
+        self.rewards = grow_array(self.rewards)
+        self.returns = grow_array(self.returns)
+        self.episode_starts = grow_array(self.episode_starts)
+        self.values = grow_array(self.values)
+        self.log_probs = grow_array(self.log_probs)
+        self.advantages = grow_array(self.advantages)
+
+        self.actor_prefixes = grow_array(self.actor_prefixes)
+        self.critic_prefixes = grow_array(self.critic_prefixes)
+
 
     def add_trajectory(
         self,
@@ -56,7 +77,8 @@ class MapleRolloutBuffer(RolloutBuffer):
         episode_start: np.ndarray = traj_obj['episode_starts']
         value: th.Tensor = traj_obj['values']
         log_prob: th.Tensor = traj_obj['log_probs']
-        prefix: th.Tensor = traj_obj['prefix']
+        actor_prefix: th.Tensor = traj_obj['actor_prefix']
+        critic_prefix: th.Tensor = traj_obj['critic_prefix']
         """
         Add a trajectory (sequence of steps) to the buffer.
         Assumes inputs do not include the env dimension (since n_envs=1).
@@ -75,15 +97,18 @@ class MapleRolloutBuffer(RolloutBuffer):
         if self.pos + traj_len > self.buffer_size:
             raise ValueError(f"Trajectory of length {traj_len} exceeds remaining buffer space ({self.buffer_size - self.pos})")
 
-        end = self.pos + traj_len if self.pos + traj_len <self.buffer_size else self.buffer_size -1
+        end = self.pos + traj_len
 
-        selection = traj_len + (self.pos + traj_len - end)
+        if end >= self.buffer_size:
+            delta = end + 1 - self.buffer_size
+            self.expand_by(delta)
 
         # Reshape needed when using discrete observations
         if isinstance(self.observation_space, spaces.Discrete):
             obs = obs.reshape((traj_len, self.n_envs) + self.obs_shape)
         
-        prefix = prefix.clone().cpu().numpy().reshape((traj_len, self.n_envs)+self.prefix_size)
+        actor_prefix = actor_prefix.clone().cpu().numpy().reshape((traj_len, self.n_envs)+self.prefix_size[0])
+        critic_prefix = critic_prefix.clone().cpu().numpy().reshape((traj_len, self.n_envs)+self.prefix_size[1])
 
         # Reshape to handle multi-dim and discrete action spaces
         action = action.reshape((traj_len, self.n_envs, self.action_dim))
@@ -95,19 +120,21 @@ class MapleRolloutBuffer(RolloutBuffer):
         episode_starts = episode_start.reshape((traj_len, self.n_envs))
 
         # Assign to buffer slices
-        self.observations[self.pos:end] = np.array(obs)[:selection]
-        self.actions[self.pos:end] = np.array(action)[:selection]
-        self.rewards[self.pos:end] = rewards[:selection]
-        self.episode_starts[self.pos:end] = episode_starts[:selection]
-        self.values[self.pos:end] = values[:selection]
-        self.log_probs[self.pos:end] = log_probs[:selection]
-        self.prefixes[self.pos:end] = prefix[:selection]
+        self.observations[self.pos:end] = np.array(obs)
+        self.actions[self.pos:end] = np.array(action)
+        self.rewards[self.pos:end] = rewards
+        self.episode_starts[self.pos:end] = episode_starts
+        self.values[self.pos:end] = values
+        self.log_probs[self.pos:end] = log_probs
+        self.actor_prefixes[self.pos:end] = actor_prefix
+        self.critic_prefixes[self.pos:end] = critic_prefix
 
         self.pos += traj_len
-        if self.pos == self.buffer_size:
+        if self.pos >= self.buffer_size:
             self.full = True
 
 class DynamicReplayBuffer:
+    current_prefixes:Tuple[th.Tensor, th.Tensor]
     def __init__(self, n_envs: int, device: str = "cpu"):
         self.n_envs = n_envs
         self.device = device
@@ -116,9 +143,17 @@ class DynamicReplayBuffer:
         # This stores the optimized prefix currently being used for each env
         self.current_prefixes = None 
 
-    def initialize_self(self, initial_prefixes: th.Tensor):
-        # initial_prefixes: (n_envs, C, H, W)
-        self.current_prefixes = initial_prefixes.detach().clone()
+    def initialize_self(self, initial_prefixes: Tuple[th.Tensor, th.Tensor]):
+            # Store as a tuple of tensors: ( (n_envs, ...), (n_envs, ...) )
+            self.current_prefixes = (
+                initial_prefixes[0].detach().clone(), 
+                initial_prefixes[1].detach().clone()
+            )
+
+    def set_env_prefix(self, env_idx: int, actor_p: th.Tensor, critic_p: th.Tensor):
+            """Helper to update a specific environment's prefixes"""
+            self.current_prefixes[0][env_idx] = actor_p
+            self.current_prefixes[1][env_idx] = critic_p 
 
     def append_step(self, env_idx, obs, actions, rewards, episode_starts, values, log_probs, prefix):
         # We store the data for the CURRENT active retry
@@ -128,7 +163,8 @@ class DynamicReplayBuffer:
         step_data = {
             'obs': obs, 'actions': actions, 'rewards': rewards,
             'episode_starts': episode_starts, 'values': values, 
-            'log_probs': log_probs, 'prefix': prefix
+            'log_probs': log_probs,  'actor_prefix': prefix[0], 
+            'critic_prefix': prefix[1],
         }
         self.history[env_idx][-1].append(step_data)
 
@@ -149,10 +185,12 @@ class DynamicReplayBuffer:
             for step in list_of_dicts:
                 temporary_list.append(step[k])
             if isinstance(temporary_list[0], th.Tensor):
-                my_return_dict[k] = th.Tensor(temporary_list)
+                my_return_dict[k] = th.stack(temporary_list)
             else:
                 my_return_dict[k] = np.array(temporary_list)
         return my_return_dict
 
     def reset_env(self, env_idx):
         self.history[env_idx] = []
+        self.current_prefixes[0][env_idx].zero_()
+        self.current_prefixes[1][env_idx].zero_()
