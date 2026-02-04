@@ -118,12 +118,11 @@ class SokobanRetriesWrapper(SokobanEnv):
         super().__init__(*args, **kwargs)
         self.max_retries = max_retries
         self.current_retry = 0
-        self.retry_needed = False
         
         # Placeholder for the saved level state
         self.saved_state = None
 
-    def reset(self, seed=None, options=None, second_player=False, render_mode='rgb_array'):
+    def reset(self, seed=None, options=None, second_player=False, render_mode='rgb_array', force_retry=False, force_new_level=False):
         """
         Custom reset that decides whether to:
         1. Fast-Restore the previous level (if retrying)
@@ -132,7 +131,7 @@ class SokobanRetriesWrapper(SokobanEnv):
         
         # --- PATH 1: RETRY ---
         # We only retry if we failed previously AND have retries left AND have a state to restore
-        if self.retry_needed and self.current_retry < self.max_retries and self.saved_state is not None:
+        if ((self.current_retry < self.max_retries or force_retry) and self.saved_state is not None) and not force_new_level:
             self.current_retry += 1
             # print(f"DEBUG: Retrying level (Attempt {self.current_retry}/{self.max_retries})")
             
@@ -149,7 +148,6 @@ class SokobanRetriesWrapper(SokobanEnv):
         
         # Reset retry counters
         self.current_retry = 0
-        self.retry_needed = False
         
         # Add debug info
         info["retry_count"] = 0
@@ -158,15 +156,6 @@ class SokobanRetriesWrapper(SokobanEnv):
     def step(self, action, observation_mode='rgb_array'):
         obs, reward, terminated, truncated, info = super().step(action, observation_mode)
         
-        # Logic to determine if we should retry next time
-        if terminated or truncated:
-            if terminated:
-                # We Won! (All boxes on target) -> Do not retry, go to next level
-                self.retry_needed = False
-            else:
-                # We Failed! (Ran out of time) -> Mark for retry
-                self.retry_needed = True
-
         # Inject retry info into the info dict (useful for logging)
         info["retry_count"] = self.current_retry
         info["retries_left"] = self.max_retries - self.current_retry
