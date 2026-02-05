@@ -314,48 +314,50 @@ class Maple(PPO):
         return True
     
     def train(self) -> None:
-            """
-            Update policy using the currently gathered rollout buffer (PPO).
-            Also updates the Consolidator using the First -> Last trajectory mapping (Supervised).
-            """
-            # Switch to train mode (affects batch norm / dropout)
-            self.policy.set_training_mode(True)
-            self.consolidator.set_training_mode(True)
-            
-            # Update learning rates
-            self._update_learning_rate(self.policy.optimizer)
-            self._update_learning_rate(self.consolidator.optimizer)
-            
-            # Compute current clip ranges
-            clip_range = self.clip_range(self._current_progress_remaining)
-            if self.clip_range_vf is not None:
-                clip_range_vf = self.clip_range_vf(self._current_progress_remaining)
+        """
+        Update policy using the currently gathered rollout buffer (PPO).
+        Also updates the Consolidator using the First -> Last trajectory mapping (Supervised).
+        """
+        # Switch to train mode (affects batch norm / dropout)
+        self.policy.set_training_mode(True)
+        self.consolidator.set_training_mode(True)
+        
+        # Update learning rates
+        self._update_learning_rate(self.policy.optimizer)
+        self._update_learning_rate(self.consolidator.optimizer)
+        
+        # Compute current clip ranges
+        clip_range = self.clip_range(self._current_progress_remaining)
+        if self.clip_range_vf is not None:
+            clip_range_vf = self.clip_range_vf(self._current_progress_remaining)
 
-            # ==============================================================================
-            # PHASE 1: Consolidator Training (Supervised Learning from Errors)
-            # ==============================================================================
-            consolidator_losses = []
-            
+        consolidator_losses = []
+        ppo_losses, entropy_losses, value_losses = [], [], []
+
+        # ==============================================================================
+        # MAIN TRAINING LOOP (Epochs)
+        # ==============================================================================
+        for _ in range(self.n_epochs):
+
+            # --------------------------------------------------------------------------
+            # PART A: Consolidator Training (Run once per epoch over its buffer)
+            # --------------------------------------------------------------------------
+            # NOTE: We do NOT clear the buffer here. We need it for the next epoch!
             if len(self.consolidator_buffer) > 0:
                 for sample in self.consolidator_buffer:
                     # 1. Get Input: Sequence of observations from the failed/first attempt
-                    # Shape: (T, C, H, W)
                     obs_traj = th.as_tensor(sample["input_obs"], device=self.device)
+                    obs_traj = obs_traj.unsqueeze(0) # Add batch dim
                     
-                    # Add batch dimension -> (1, T, C, H, W)
-                    # The Consolidator expects a batch of sequences
-                    obs_traj = obs_traj.unsqueeze(0)
-                    
-                    # 2. Get Targets: The optimized prefixes from the successful/last attempt
+                    # 2. Get Targets
                     target_a, target_c = sample["target_prefixes"]
-                    # Targets are currently (PrefixDim,). Add batch dim -> (1, PrefixDim)
                     target_a = target_a.unsqueeze(0).to(self.device)
                     target_c = target_c.unsqueeze(0).to(self.device)
 
                     # 3. Forward Pass
                     pred_a, pred_c = self.consolidator(obs_traj)
 
-                    # 4. Loss (MSE between Predicted and Optimized Prefix)
+                    # 4. Loss
                     loss_a = F.mse_loss(pred_a, target_a)
                     loss_c = F.mse_loss(pred_c, target_c)
                     total_loss = loss_a + loss_c
@@ -367,97 +369,88 @@ class Maple(PPO):
 
                     consolidator_losses.append(total_loss.item())
 
-                # Clear the buffer so we don't train on old data again
-                self.consolidator_buffer = []
-
-            # ==============================================================================
-            # PHASE 2: PPO Training (Policy & Value Function)
-            # ==============================================================================
-            ppo_losses, entropy_losses, value_losses = [], [], []
-            
-            # Train for n_epochs
-            for epoch in range(self.n_epochs):
-                # Iterate over the PPO RolloutBuffer
-                # Note: We assume rollout_buffer.get() returns our custom samples with prefixes
-                for rollout_data in self.rollout_buffer.get(self.batch_size):
-                    
-                    actions = rollout_data.actions
-                    if isinstance(self.action_space, spaces.Discrete):
-                        actions = rollout_data.actions.long().flatten()
-
-                    # --- Extract Prefixes from Buffer ---
-                    # These were stored during rollout. 
-                    # Shape: (Batch_Size, Prefix_Dim)
-                    current_prefixes = (
-                        rollout_data.actor_prefixes, 
-                        rollout_data.critic_prefixes
-                    )
-                    
-                    # --- Policy Forward Pass (With Injection) ---
-                    # We override evaluate_actions to accept the tuple of prefixes
-                    values, log_prob, entropy = self.policy.evaluate_actions(
-                        rollout_data.observations,
-                        actions,
-                        current_prefixes # <--- CRITICAL: Injecting prefixes
-                    )
-                    
-                    values = values.flatten()
-                    
-                    # Normalize advantage
-                    advantages = rollout_data.advantages
-                    if self.normalize_advantage:
-                        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
-
-                    # Ratio between old and new policy
-                    ratio = th.exp(log_prob - rollout_data.old_log_prob)
-
-                    # Clipped surrogate loss
-                    policy_loss_1 = advantages * ratio
-                    policy_loss_2 = advantages * th.clamp(ratio, 1 - clip_range, 1 + clip_range)
-                    policy_loss = -th.min(policy_loss_1, policy_loss_2).mean()
-
-                    # Value loss using the TD(lam) return
-                    if self.clip_range_vf is None:
-                        values_pred = values
-                    else:
-                        values_pred = rollout_data.old_values + th.clamp(
-                            values - rollout_data.old_values,
-                            -clip_range_vf,
-                            clip_range_vf,
-                        )
-                    
-                    value_loss = F.mse_loss(rollout_data.returns, values_pred)
-
-                    # Entropy loss
-                    if self.ent_coef > 0:
-                        entropy_loss = -th.mean(entropy)
-                    else:
-                        entropy_loss = 0
-
-                    loss = policy_loss + self.ent_coef * entropy_loss + self.vf_coef * value_loss
-
-                    # Optimization step
-                    self.policy.optimizer.zero_grad()
-                    loss.backward()
-                    th.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
-                    self.policy.optimizer.step()
-                    
-                    # Logging
-                    ppo_losses.append(policy_loss.item())
-                    value_losses.append(value_loss.item())
-                    entropy_losses.append(entropy_loss.item() if isinstance(entropy_loss, th.Tensor) else entropy_loss)
-
-            self._n_updates += self.n_epochs
-            
-            # ==============================================================================
-            # Logging
-            # ==============================================================================
-            self.logger.record("train/entropy_loss", np.mean(entropy_losses))
-            self.logger.record("train/policy_gradient_loss", np.mean(ppo_losses))
-            self.logger.record("train/value_loss", np.mean(value_losses))
-            
-            if len(consolidator_losses) > 0:
-                self.logger.record("train/consolidator_loss", np.mean(consolidator_losses))
+            # --------------------------------------------------------------------------
+            # PART B: PPO Training (Standard Minibatch Iteration)
+            # --------------------------------------------------------------------------
+            for rollout_data in self.rollout_buffer.get(self.batch_size):
                 
-            self.logger.record("train/loss", loss.item())
-            self.logger.record("train/n_updates", self._n_updates, exclude="tensorboard")
+                actions = rollout_data.actions
+                if isinstance(self.action_space, spaces.Discrete):
+                    actions = rollout_data.actions.long().flatten()
+
+                current_prefixes = (
+                    rollout_data.actor_prefixes, 
+                    rollout_data.critic_prefixes
+                )
+                
+                # Forward Pass (With Injection)
+                values, log_prob, entropy = self.policy.evaluate_actions(
+                    rollout_data.observations,
+                    actions,
+                    current_prefixes 
+                )
+                
+                values = values.flatten()
+                
+                # Normalize advantage
+                advantages = rollout_data.advantages
+                if self.normalize_advantage:
+                    advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+
+                # Ratio between old and new policy
+                ratio = th.exp(log_prob - rollout_data.old_log_prob)
+
+                # Clipped surrogate loss
+                policy_loss_1 = advantages * ratio
+                policy_loss_2 = advantages * th.clamp(ratio, 1 - clip_range, 1 + clip_range)
+                policy_loss = -th.min(policy_loss_1, policy_loss_2).mean()
+
+                # Value loss
+                if self.clip_range_vf is None:
+                    values_pred = values
+                else:
+                    values_pred = rollout_data.old_values + th.clamp(
+                        values - rollout_data.old_values,
+                        -clip_range_vf,
+                        clip_range_vf,
+                    )
+                
+                value_loss = F.mse_loss(rollout_data.returns, values_pred)
+
+                # Entropy loss
+                if self.ent_coef > 0:
+                    entropy_loss = -th.mean(entropy)
+                else:
+                    entropy_loss = 0
+
+                loss = policy_loss + self.ent_coef * entropy_loss + self.vf_coef * value_loss
+
+                # Optimization step
+                self.policy.optimizer.zero_grad()
+                loss.backward()
+                th.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
+                self.policy.optimizer.step()
+                
+                # Logging
+                ppo_losses.append(policy_loss.item())
+                value_losses.append(value_loss.item())
+                entropy_losses.append(entropy_loss.item() if isinstance(entropy_loss, th.Tensor) else entropy_loss)
+
+        # ==============================================================================
+        # CLEANUP: Clear buffer ONLY after all epochs are done
+        # ==============================================================================
+        self.consolidator_buffer = []
+        self._n_updates += self.n_epochs
+        
+        # ==============================================================================
+        # Logging
+        # ==============================================================================
+        self.logger.record("train/entropy_loss", np.mean(entropy_losses))
+        self.logger.record("train/policy_gradient_loss", np.mean(ppo_losses))
+        self.logger.record("train/value_loss", np.mean(value_losses))
+        
+        if len(consolidator_losses) > 0:
+            self.logger.record("train/consolidator_loss", np.mean(consolidator_losses))
+            
+        self.logger.record("train/loss", loss.item())
+        self.logger.record("train/n_updates", self._n_updates, exclude="tensorboard")
