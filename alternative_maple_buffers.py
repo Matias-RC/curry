@@ -1,9 +1,19 @@
+from typing import Optional, Union, Tuple, NamedTuple, Generator, VecNormalize
 from stable_baselines3.common.type_aliases import RolloutBufferSamples
 from stable_baselines3.common.buffers import RolloutBuffer
-from typing import Optional, Union, Tuple
 from gymnasium import spaces
 import torch as th
 import numpy as np
+
+class MapleRolloutBufferSamples(NamedTuple):
+    observations: th.Tensor
+    actions: th.Tensor
+    old_values: th.Tensor
+    old_log_prob: th.Tensor
+    advantages: th.Tensor
+    returns: th.Tensor
+    actor_prefixes: th.Tensor   
+    critic_prefixes: th.Tensor 
 
 class MapleRolloutBuffer(RolloutBuffer):
     """
@@ -132,6 +142,55 @@ class MapleRolloutBuffer(RolloutBuffer):
         self.pos += traj_len
         if self.pos >= self.buffer_size:
             self.full = True
+
+    def get(self, batch_size: Optional[int] = None) -> Generator[MapleRolloutBufferSamples, None, None]:
+            assert self.full, ""
+            indices = np.random.permutation(self.buffer_size * self.n_envs)
+            
+            # Prepare the data
+            if not self.generator_ready:
+                # We add your custom prefix buffers to this list so they get 
+                # swapped (time, env) -> (env, time) and flattened -> (batch_size, ...)
+                _tensor_names = [
+                    "observations",
+                    "actions",
+                    "values",
+                    "log_probs",
+                    "advantages",
+                    "returns",
+                    "actor_prefixes",   # <--- ADDED
+                    "critic_prefixes",  # <--- ADDED
+                ]
+
+                for tensor in _tensor_names:
+                    # This reshapes the storage from (n_steps, n_envs, ...) to (n_steps * n_envs, ...)
+                    self.__dict__[tensor] = self.swap_and_flatten(self.__dict__[tensor])
+                self.generator_ready = True
+
+            # Return everything, don't create minibatches
+            if batch_size is None:
+                batch_size = self.buffer_size * self.n_envs
+
+            start_idx = 0
+            while start_idx < self.buffer_size * self.n_envs:
+                yield self._get_samples(indices[start_idx : start_idx + batch_size])
+                start_idx += batch_size
+    def _get_samples(self, batch_inds: np.ndarray, env: Optional[VecNormalize] = None) -> MapleRolloutBufferSamples:
+            data = (
+                self.observations[batch_inds],
+                self.actions[batch_inds],
+                self.values[batch_inds].flatten(),
+                self.log_probs[batch_inds].flatten(),
+                self.advantages[batch_inds].flatten(),
+                self.returns[batch_inds].flatten(),
+                self.actor_prefixes[batch_inds],   # <--- Retrieve specific batch of prefixes
+                self.critic_prefixes[batch_inds],  # <--- Retrieve specific batch of prefixes
+            )
+            
+            # Convert to torch tensors
+            return MapleRolloutBufferSamples(*tuple(map(self.to_torch, data)))
+
+
 
 class DynamicReplayBuffer:
     current_prefixes:Tuple[th.Tensor, th.Tensor]

@@ -8,6 +8,7 @@ from stable_baselines3.common.vec_env import VecEnv
 from consolidator_class import Consolidator
 from typing import Any, Optional, Union
 from stable_baselines3 import PPO
+import torch.functional as F
 from gymnasium import spaces
 import torch as th
 import numpy as np
@@ -21,16 +22,21 @@ class Maple(PPO):
     rollout_buffer:RolloutBuffer
 
     def __init__(self, dynamic_buffer_class, dynamic_buffer_kwargs,
-                 consolidator_class, consolidator_kwargs,
-                 _init_setup_model: bool = True,
-                  *args, **kwargs):
-        self.dynamic_buffer_class = dynamic_buffer_class
-        self.dynamic_buffer_kwargs = dynamic_buffer_kwargs
-        self.consolidator_class = consolidator_class
-        self.consolidator_kwargs = consolidator_kwargs
-        super().__init__(_init_setup_model=False, *args, **kwargs)
-        if _init_setup_model:
-            self._setup_model()
+                     consolidator_class, consolidator_kwargs,
+                     _init_setup_model: bool = True, num_retries=10,
+                     *args, **kwargs):
+            self.num_retries = num_retries
+            self.dynamic_buffer_class = dynamic_buffer_class
+            self.dynamic_buffer_kwargs = dynamic_buffer_kwargs
+            self.consolidator_class = consolidator_class
+            self.consolidator_kwargs = consolidator_kwargs
+
+            # Initialize the list to store episodic data for the consolidator
+            self.consolidator_buffer = [] 
+
+            super().__init__(_init_setup_model=False, *args, **kwargs)
+            if _init_setup_model:
+                self._setup_model()
         
     def _setup_model(self) -> None:
         self._setup_lr_schedule()
@@ -75,7 +81,7 @@ class Maple(PPO):
         # current_prefix is (Actor_Tensor_Batch, Critic_Tensor_Batch)
         a_prefix_batch, c_prefix_batch = current_prefix
         current_obs, actions, rewards, episode_starts, values, log_probs = contents
-        
+
         for idx, _ in enumerate(past_infos):
             # Slice out the specific prefix for this environment
             # We use detach() because we don't want to store the whole computation graph
@@ -83,7 +89,7 @@ class Maple(PPO):
                 a_prefix_batch[idx].detach(), 
                 c_prefix_batch[idx].detach()
             )
-            
+
             self.dynamic_buffer.append_step(
                 env_idx=idx, 
                 obs=current_obs[idx], 
@@ -99,6 +105,7 @@ class Maple(PPO):
             indices_of_generated = []
             to_be_generated = []
             prefix_lr = 0.05 
+            max_grad_norm = 0.5
 
             for idx, (info, done) in enumerate(zip(infos, dones)):
                 if not done:
@@ -161,11 +168,19 @@ class Maple(PPO):
                     grads = th.autograd.grad(total_loss, [a_prefix, c_prefix], allow_unused=True)
 
                     if grads[0] is not None: # Actor Update
-                        new_a = a_prefix - prefix_lr * grads[0]
+                        g_actor = grads[0]
+                        actor_norm = g_actor.norm()
+                        if actor_norm > max_grad_norm:
+                            g_actor = g_actor * (max_grad_norm / (actor_norm + 1e-6))
+                        new_a = a_prefix - prefix_lr*g_actor
                         self.dynamic_buffer.current_prefixes[0][idx] = new_a.detach()
 
                     if grads[1] is not None: # Critic Update
-                        new_c = c_prefix - prefix_lr * grads[1]
+                        g_critic = grads[1]
+                        critic_norm = g_critic.norm()
+                        if critic_norm > max_grad_norm:
+                            g_critic = g_critic * (max_grad_norm / (critic_norm + 1e-6))
+                        new_c = c_prefix - prefix_lr * g_critic
                         self.dynamic_buffer.current_prefixes[1][idx] = new_c.detach()
 
             # Execute Batch Generation (Ensure Consolidator returns a tuple)
@@ -188,7 +203,13 @@ class Maple(PPO):
                 traj_last = self.dynamic_buffer.get_last_attempt(env_idx=idx)
                 self.rollout_buffer.add_trajectory(traj_first)
                 self.rollout_buffer.add_trajectory(traj_last)
+                target_actor_prefix = traj_last['actor_prefix'][0].detach().clone()
+                target_critic_prefix = traj_last['critic_prefix'][0].detach().clone()
                 
+                self.consolidator_buffer.append({
+                    "input_obs": traj_first['obs'], # The "Error" sequence
+                    "target_prefixes": (target_actor_prefix, target_critic_prefix)
+                })
                 # Clear Dynamic Buffer for this env to start fresh on next level
                 self.dynamic_buffer.reset_env(env_idx=idx)
 
@@ -218,7 +239,7 @@ class Maple(PPO):
         assert actor_init.shape[0] == self.n_envs == critic_init.shape[0]
 
         self.dynamic_buffer.initialize_self((actor_init, critic_init))
-        self._past_infos = [{"retries_left":1, "retry_count":0} for _ in range(self.n_envs)]
+        self._past_infos = [{"retries_left":self.num_retries, "retry_count":0} for _ in range(self.n_envs)]
 
         while not self.rollout_buffer.full:
 
@@ -292,5 +313,151 @@ class Maple(PPO):
 
         return True
     
-    def train(self):
-        return super().train()
+    def train(self) -> None:
+            """
+            Update policy using the currently gathered rollout buffer (PPO).
+            Also updates the Consolidator using the First -> Last trajectory mapping (Supervised).
+            """
+            # Switch to train mode (affects batch norm / dropout)
+            self.policy.set_training_mode(True)
+            self.consolidator.set_training_mode(True)
+            
+            # Update learning rates
+            self._update_learning_rate(self.policy.optimizer)
+            self._update_learning_rate(self.consolidator.optimizer)
+            
+            # Compute current clip ranges
+            clip_range = self.clip_range(self._current_progress_remaining)
+            if self.clip_range_vf is not None:
+                clip_range_vf = self.clip_range_vf(self._current_progress_remaining)
+
+            # ==============================================================================
+            # PHASE 1: Consolidator Training (Supervised Learning from Errors)
+            # ==============================================================================
+            consolidator_losses = []
+            
+            if len(self.consolidator_buffer) > 0:
+                for sample in self.consolidator_buffer:
+                    # 1. Get Input: Sequence of observations from the failed/first attempt
+                    # Shape: (T, C, H, W)
+                    obs_traj = th.as_tensor(sample["input_obs"], device=self.device)
+                    
+                    # Add batch dimension -> (1, T, C, H, W)
+                    # The Consolidator expects a batch of sequences
+                    obs_traj = obs_traj.unsqueeze(0)
+                    
+                    # 2. Get Targets: The optimized prefixes from the successful/last attempt
+                    target_a, target_c = sample["target_prefixes"]
+                    # Targets are currently (PrefixDim,). Add batch dim -> (1, PrefixDim)
+                    target_a = target_a.unsqueeze(0).to(self.device)
+                    target_c = target_c.unsqueeze(0).to(self.device)
+
+                    # 3. Forward Pass
+                    pred_a, pred_c = self.consolidator(obs_traj)
+
+                    # 4. Loss (MSE between Predicted and Optimized Prefix)
+                    loss_a = F.mse_loss(pred_a, target_a)
+                    loss_c = F.mse_loss(pred_c, target_c)
+                    total_loss = loss_a + loss_c
+
+                    # 5. Optimize
+                    self.consolidator.optimizer.zero_grad()
+                    total_loss.backward()
+                    self.consolidator.optimizer.step()
+
+                    consolidator_losses.append(total_loss.item())
+
+                # Clear the buffer so we don't train on old data again
+                self.consolidator_buffer = []
+
+            # ==============================================================================
+            # PHASE 2: PPO Training (Policy & Value Function)
+            # ==============================================================================
+            ppo_losses, entropy_losses, value_losses = [], [], []
+            
+            # Train for n_epochs
+            for epoch in range(self.n_epochs):
+                # Iterate over the PPO RolloutBuffer
+                # Note: We assume rollout_buffer.get() returns our custom samples with prefixes
+                for rollout_data in self.rollout_buffer.get(self.batch_size):
+                    
+                    actions = rollout_data.actions
+                    if isinstance(self.action_space, spaces.Discrete):
+                        actions = rollout_data.actions.long().flatten()
+
+                    # --- Extract Prefixes from Buffer ---
+                    # These were stored during rollout. 
+                    # Shape: (Batch_Size, Prefix_Dim)
+                    current_prefixes = (
+                        rollout_data.actor_prefixes, 
+                        rollout_data.critic_prefixes
+                    )
+                    
+                    # --- Policy Forward Pass (With Injection) ---
+                    # We override evaluate_actions to accept the tuple of prefixes
+                    values, log_prob, entropy = self.policy.evaluate_actions(
+                        rollout_data.observations,
+                        actions,
+                        current_prefixes # <--- CRITICAL: Injecting prefixes
+                    )
+                    
+                    values = values.flatten()
+                    
+                    # Normalize advantage
+                    advantages = rollout_data.advantages
+                    if self.normalize_advantage:
+                        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+
+                    # Ratio between old and new policy
+                    ratio = th.exp(log_prob - rollout_data.old_log_prob)
+
+                    # Clipped surrogate loss
+                    policy_loss_1 = advantages * ratio
+                    policy_loss_2 = advantages * th.clamp(ratio, 1 - clip_range, 1 + clip_range)
+                    policy_loss = -th.min(policy_loss_1, policy_loss_2).mean()
+
+                    # Value loss using the TD(lam) return
+                    if self.clip_range_vf is None:
+                        values_pred = values
+                    else:
+                        values_pred = rollout_data.old_values + th.clamp(
+                            values - rollout_data.old_values,
+                            -clip_range_vf,
+                            clip_range_vf,
+                        )
+                    
+                    value_loss = F.mse_loss(rollout_data.returns, values_pred)
+
+                    # Entropy loss
+                    if self.ent_coef > 0:
+                        entropy_loss = -th.mean(entropy)
+                    else:
+                        entropy_loss = 0
+
+                    loss = policy_loss + self.ent_coef * entropy_loss + self.vf_coef * value_loss
+
+                    # Optimization step
+                    self.policy.optimizer.zero_grad()
+                    loss.backward()
+                    th.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
+                    self.policy.optimizer.step()
+                    
+                    # Logging
+                    ppo_losses.append(policy_loss.item())
+                    value_losses.append(value_loss.item())
+                    entropy_losses.append(entropy_loss.item() if isinstance(entropy_loss, th.Tensor) else entropy_loss)
+
+            self._n_updates += self.n_epochs
+            
+            # ==============================================================================
+            # Logging
+            # ==============================================================================
+            self.logger.record("train/entropy_loss", np.mean(entropy_losses))
+            self.logger.record("train/policy_gradient_loss", np.mean(ppo_losses))
+            self.logger.record("train/value_loss", np.mean(value_losses))
+            
+            if len(consolidator_losses) > 0:
+                self.logger.record("train/consolidator_loss", np.mean(consolidator_losses))
+                
+            self.logger.record("train/loss", loss.item())
+            self.logger.record("train/n_updates", self._n_updates, exclude="tensorboard")
