@@ -5,7 +5,7 @@ import torch as th
 import numpy as np
 
 class ChannelStackedSpatialAccumulation(nn.Module):
-    def __init__(self, C_in, C_out, kernel):
+    def __init__(self, C_in, C_out):
         super().__init__()
 
         self.C_in = C_in
@@ -14,8 +14,8 @@ class ChannelStackedSpatialAccumulation(nn.Module):
         self.conv = nn.Conv2d(
             C_in,
             C_out,
-            kernel,
-            padding=kernel // 2
+            3,
+            padding=1
         )
 
     def forward(self, x):
@@ -41,8 +41,8 @@ class Consolidator(nn.Module):
     def __init__(
         self, 
         net_arch: dict,
-        actor_prefix_shape: Tuple[int, int, int], # (C, H, W)
-        critic_prefix_shape: Tuple[int, int, int], # (C, H, W)
+        actor_prefix_channels: int, 
+        critic_prefix_channels: int, 
         lr_schedule: Schedule,
         optimizer_class: Type[th.optim.Optimizer] = th.optim.Adam,
         optimizer_kwargs: Optional[Dict[str, Any]] = None
@@ -56,8 +56,8 @@ class Consolidator(nn.Module):
         """
         super().__init__()
         
-        self.actor_prefix_shape = actor_prefix_shape
-        self.critic_prefix_shape = critic_prefix_shape
+        self.actor_prefix_channels = actor_prefix_channels
+        self.critic_prefix_channels = critic_prefix_channels
         self.optimizer_class = optimizer_class
         self.optimizer_kwargs = optimizer_kwargs or {}
 
@@ -143,33 +143,3 @@ class Consolidator(nn.Module):
         
         return actor_init, critic_init
     
-if __name__ == "__main__":
-    # Example Configuration
-    obs_channels = 3
-    prefix_channels = 16 # C_out
-
-    net_arch = {
-        "n_shared_layers": 1,
-        "shared_class": [ChannelStackedSpatialAccumulation],
-        "shared_kwargs": [{
-            "C_in": obs_channels,    # The layer needs to know the channel count per frame
-            "C_out": 64,             # Internal feature dimension
-            "kernel": 3
-        }],
-        
-        "n_policy_layers": 1,
-        "policy_layers": [nn.Conv2d],
-        "policy_kwargs": [{"in_channels": 64, "out_channels": prefix_channels, "kernel_size": 3, "padding": 1}],
-        
-        "n_vf_layers": 1,
-        "vf_layers": [nn.Conv2d],
-        "vf_kwargs": [{"in_channels": 64, "out_channels": prefix_channels, "kernel_size": 3, "padding": 1}],
-    }
-
-    # Instantiate
-    consolidator = Consolidator(
-        net_arch=net_arch,
-        actor_prefix_shape=(prefix_channels, 64, 64), # Match your env H,W
-        critic_prefix_shape=(prefix_channels, 64, 64),
-        lr_schedule=lambda x: 1e-3
-    )

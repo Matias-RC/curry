@@ -1,42 +1,123 @@
 #MAPLE: Memory Augmented Policy that Learns from Errors at test time
 
-from stable_baselines3.common.utils import FloatSchedule, explained_variance, obs_as_tensor
+import warnings
+from typing import Any, ClassVar, Optional, TypeVar, Union
+
+from stable_baselines3.common.policies import (
+    ActorCriticCnnPolicy,
+    ActorCriticPolicy,
+    BasePolicy,
+    MultiInputActorCriticPolicy,
+)
+from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
+from stable_baselines3.common.on_policy_algorithm import OnPolicyAlgorithm
 from stable_baselines3.common.buffers import DictRolloutBuffer, RolloutBuffer, BaseBuffer
-from alternative_maple_buffers import DynamicReplayBuffer, MapleRolloutBuffer
+from stable_baselines3.common.utils import FloatSchedule, explained_variance, obs_as_tensor
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.vec_env import VecEnv
-from consolidator_class import Consolidator
-from typing import Any, Optional, Union
 from stable_baselines3 import PPO
-import torch.functional as F
+
 from gymnasium import spaces
+
+import torch.nn.functional as F
 import torch as th
 import numpy as np
+
+from alternative_maple_buffers import DynamicReplayBuffer, MapleRolloutBuffer
+from consolidator_class import Consolidator
+
 
 
 
 class Maple(PPO):
 
-    consolidator:Consolidator
-    dynamic_buffer_class:DynamicReplayBuffer
-    rollout_buffer:RolloutBuffer
+    consolidator: Consolidator
+    dynamic_buffer_class: type
+    rollout_buffer: RolloutBuffer
 
-    def __init__(self, dynamic_buffer_class, dynamic_buffer_kwargs,
-                     consolidator_class, consolidator_kwargs,
-                     _init_setup_model: bool = True, num_retries=10,
-                     *args, **kwargs):
-            self.num_retries = num_retries
-            self.dynamic_buffer_class = dynamic_buffer_class
-            self.dynamic_buffer_kwargs = dynamic_buffer_kwargs
-            self.consolidator_class = consolidator_class
-            self.consolidator_kwargs = consolidator_kwargs
+    def __init__(
+        self,
+        # ---- PPO args (explicit) ----
+        policy: Union[str, type[ActorCriticPolicy]],
+        env: Union[GymEnv, str],
+        learning_rate: Union[float, Schedule] = 3e-4,
+        n_steps: int = 2048,
+        batch_size: int = 64,
+        n_epochs: int = 10,
+        gamma: float = 0.99,
+        gae_lambda: float = 0.95,
+        clip_range: Union[float, Schedule] = 0.2,
+        clip_range_vf: Union[None, float, Schedule] = None,
+        normalize_advantage: bool = True,
+        ent_coef: float = 0.0,
+        vf_coef: float = 0.5,
+        max_grad_norm: float = 0.5,
+        use_sde: bool = False,
+        sde_sample_freq: int = -1,
+        rollout_buffer_class: Optional[type[RolloutBuffer]] = None,
+        rollout_buffer_kwargs: Optional[dict[str, Any]] = None,
+        target_kl: Optional[float] = None,
+        stats_window_size: int = 100,
+        tensorboard_log: Optional[str] = None,
+        policy_kwargs: Optional[dict[str, Any]] = None,
+        verbose: int = 0,
+        seed: Optional[int] = None,
+        device: Union[th.device, str] = "auto",
+        _init_setup_model: bool = True,
 
-            # Initialize the list to store episodic data for the consolidator
-            self.consolidator_buffer = [] 
+        # ---- MAPLE-specific args ----
+        dynamic_buffer_class: type = None,
+        dynamic_buffer_kwargs: Optional[dict[str, Any]] = None,
+        consolidator_class: type = None,
+        consolidator_kwargs: Optional[dict[str, Any]] = None,
+        num_retries: int = 10,
+    ):
+        # ---- MAPLE state ----
+        self.num_retries = num_retries
 
-            super().__init__(_init_setup_model=False, *args, **kwargs)
-            if _init_setup_model:
-                self._setup_model()
+        self.dynamic_buffer_class = dynamic_buffer_class
+        self.dynamic_buffer_kwargs = dynamic_buffer_kwargs or {}
+
+        self.consolidator_class = consolidator_class
+        self.consolidator_kwargs = consolidator_kwargs or {}
+
+        # episodic trajectories for consolidation
+        self.consolidator_buffer = []
+
+        # ---- Call PPO explicitly ----
+        super().__init__(
+            policy=policy,
+            env=env,
+            learning_rate=learning_rate,
+            n_steps=n_steps,
+            batch_size=batch_size,
+            n_epochs=n_epochs,
+            gamma=gamma,
+            gae_lambda=gae_lambda,
+            clip_range=clip_range,
+            clip_range_vf=clip_range_vf,
+            normalize_advantage=normalize_advantage,
+            ent_coef=ent_coef,
+            vf_coef=vf_coef,
+            max_grad_norm=max_grad_norm,
+            use_sde=use_sde,
+            sde_sample_freq=sde_sample_freq,
+            rollout_buffer_class=rollout_buffer_class,
+            rollout_buffer_kwargs=rollout_buffer_kwargs,
+            target_kl=target_kl,
+            stats_window_size=stats_window_size,
+            tensorboard_log=tensorboard_log,
+            policy_kwargs=policy_kwargs,
+            verbose=verbose,
+            seed=seed,
+            device=device,
+            _init_setup_model=False,   # IMPORTANT: delay setup
+        )
+
+        # ---- Maple-controlled setup ----
+        if _init_setup_model:
+            self._setup_model()
+
         
     def _setup_model(self) -> None:
         self._setup_lr_schedule()
@@ -279,7 +360,7 @@ class Maple(PPO):
                 ):
                     terminal_obs = self.policy.obs_to_tensor(infos[idx]["terminal_observation"])[0]
                     with th.no_grad():
-                        terminal_value = self.policy.predict_values(terminal_obs, self.dynamic_buffer.current_prefixes[1])[0]
+                        terminal_value = self.policy.predict_values(terminal_obs, self.dynamic_buffer.current_prefixes)[0]
                     rewards[idx] += self.gamma * terminal_value
 
             self._update_dynamic_buffer((self._last_obs, actions, rewards,self._last_episode_starts,
@@ -301,7 +382,7 @@ class Maple(PPO):
 
         with th.no_grad():
             # Compute value for the last timestep
-            values = self.policy.predict_values(obs_as_tensor(new_obs, self.device), self.dynamic_buffer.current_prefixes[1])
+            values = self.policy.predict_values(obs_as_tensor(new_obs, self.device), self.dynamic_buffer.current_prefixes)
 
         rollout_buffer.compute_returns_and_advantage(last_values=values, dones=dones)
 
