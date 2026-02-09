@@ -1,4 +1,5 @@
-from typing import Optional, Union, Tuple, NamedTuple, Generator, VecNormalize
+from typing import Optional, Union, Tuple, NamedTuple, Generator
+from stable_baselines3.common.vec_env import VecNormalize
 from stable_baselines3.common.type_aliases import RolloutBufferSamples
 from stable_baselines3.common.buffers import RolloutBuffer
 from gymnasium import spaces
@@ -33,6 +34,7 @@ class MapleRolloutBuffer(RolloutBuffer):
         gamma: float = 0.99,
         n_envs: int = 1,
     ):
+        self.prefix_size = prefix_size
         super().__init__(
             buffer_size*n_envs,
             observation_space,
@@ -42,7 +44,7 @@ class MapleRolloutBuffer(RolloutBuffer):
             gamma,
             n_envs=1,  # Force n_envs=1, ignoring passed value
         )
-        self.prefix_size = prefix_size
+        
 
     def reset(self) -> None:
         self.observations = np.zeros((self.buffer_size, self.n_envs, *self.obs_shape), dtype=self.observation_space.dtype)
@@ -53,8 +55,8 @@ class MapleRolloutBuffer(RolloutBuffer):
         self.values = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
         self.log_probs = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
         self.advantages = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
-        self.actor_prefixes = np.zeros((self.buffer_size, self.n_envs, *self.prefix_size[0]))
-        self.critic_prefixes = np.zeros((self.buffer_size, self.n_envs, *self.prefix_size[1]))
+        self.actor_prefixes = np.zeros((self.buffer_size, self.n_envs, self.prefix_size[0], *self.obs_shape[1:]))
+        self.critic_prefixes = np.zeros((self.buffer_size, self.n_envs, self.prefix_size[1], *self.obs_shape[1:]))
         self.generator_ready = False
         super().reset()
 
@@ -104,8 +106,6 @@ class MapleRolloutBuffer(RolloutBuffer):
             log_prob = log_prob.reshape(-1, 1)
 
         traj_len = obs.shape[0]
-        if self.pos + traj_len > self.buffer_size:
-            raise ValueError(f"Trajectory of length {traj_len} exceeds remaining buffer space ({self.buffer_size - self.pos})")
 
         end = self.pos + traj_len
 
@@ -113,12 +113,10 @@ class MapleRolloutBuffer(RolloutBuffer):
             delta = end + 1 - self.buffer_size
             self.expand_by(delta)
 
-        # Reshape needed when using discrete observations
-        if isinstance(self.observation_space, spaces.Discrete):
-            obs = obs.reshape((traj_len, self.n_envs) + self.obs_shape)
+        obs = obs.reshape((traj_len, self.n_envs) + self.obs_shape)    
         
-        actor_prefix = actor_prefix.clone().cpu().numpy().reshape((traj_len, self.n_envs)+self.prefix_size[0])
-        critic_prefix = critic_prefix.clone().cpu().numpy().reshape((traj_len, self.n_envs)+self.prefix_size[1])
+        actor_prefix = actor_prefix.clone().cpu().numpy().reshape((traj_len, self.n_envs)+(self.prefix_size[0], self.obs_shape[1],self.obs_shape[2]))
+        critic_prefix = critic_prefix.clone().cpu().numpy().reshape((traj_len, self.n_envs)+(self.prefix_size[1], self.obs_shape[1],self.obs_shape[2]))
 
         # Reshape to handle multi-dim and discrete action spaces
         action = action.reshape((traj_len, self.n_envs, self.action_dim))
@@ -198,7 +196,7 @@ class DynamicReplayBuffer:
         self.n_envs = n_envs
         self.device = device
         # Storage: List of lists (one list per env containing its retry history)
-        self.history = [[] for _ in range(n_envs)]
+        self.history = [[[],] for _ in range(n_envs)]
         # This stores the optimized prefix currently being used for each env
         self.current_prefixes = None 
 
@@ -214,16 +212,16 @@ class DynamicReplayBuffer:
             self.current_prefixes[0][env_idx] = actor_p
             self.current_prefixes[1][env_idx] = critic_p 
 
-    def append_step(self, env_idx, obs, actions, rewards, episode_starts, values, log_probs, prefix):
+    def append_step(self, env_idx, obs, actions, rewards, episode_starts, values, log_probs):
         # We store the data for the CURRENT active retry
-        if episode_starts:
-            self._start_new_retry(env_idx)
+        #if episode_starts:
+        #    self._start_new_retry(env_idx)
             
         step_data = {
             'obs': obs, 'actions': actions, 'rewards': rewards,
             'episode_starts': episode_starts, 'values': values, 
-            'log_probs': log_probs,  'actor_prefix': prefix[0], 
-            'critic_prefix': prefix[1],
+            'log_probs': log_probs,  'actor_prefix': self.current_prefixes[0], 
+            'critic_prefix': self.current_prefixes[1],
         }
         self.history[env_idx][-1].append(step_data)
 
@@ -250,6 +248,6 @@ class DynamicReplayBuffer:
         return my_return_dict
 
     def reset_env(self, env_idx):
-        self.history[env_idx] = []
+        self.history[env_idx] = [[],]
         self.current_prefixes[0][env_idx].zero_()
         self.current_prefixes[1][env_idx].zero_()

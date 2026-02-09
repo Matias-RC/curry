@@ -126,7 +126,7 @@ class Consolidator(nn.Module):
         """
         self.train(mode)
     
-    def _init_empty(self, n_envs: int) -> Tuple[th.Tensor, th.Tensor]:
+    def _init_empty(self, n_envs: int, obs_space_shape) -> Tuple[th.Tensor, th.Tensor]:
         """
         Creates the zero-initialized prefixes for the very first attempt (Cold Start).
         Used by Maple.collect_rollouts to populate the DynamicBuffer before any history exists.
@@ -138,8 +138,8 @@ class Consolidator(nn.Module):
         device = next(self.parameters()).device if list(self.parameters()) else 'cpu'
 
         # Generate zeros matching the expected prefix shapes
-        actor_init = th.zeros((n_envs, *self.actor_prefix_shape), dtype=th.float32, device=device)
-        critic_init = th.zeros((n_envs, *self.critic_prefix_shape), dtype=th.float32, device=device)
+        actor_init = th.zeros((n_envs, self.actor_prefix_channels, *obs_space_shape[1:]), dtype=th.float32, device=device)
+        critic_init = th.zeros((n_envs, self.critic_prefix_channels, *obs_space_shape[1:]), dtype=th.float32, device=device)
         
         return actor_init, critic_init
     

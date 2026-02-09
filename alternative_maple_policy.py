@@ -35,19 +35,23 @@ from stable_baselines3.common.policies import ActorCriticPolicy
 
 class PrefixCombinator(nn.Module):
     def __init__(self, in_channels, hidden_channels, out_channels, n_layers, out_shape):
+        super().__init__()
         past_out = in_channels
         layers = []
 
-        for i in range(n_layers):
-            layers.append(nn.Conv2d(past_out, hidden_channels[i],
+        for _ in range(n_layers):
+            layers.append(nn.Conv2d(past_out, hidden_channels,
                                     3, 1, 1))
             layers.append(nn.ReLU())
-            past_out = hidden_channels[i]
+            past_out = hidden_channels
         layers.append(nn.Conv2d(past_out, out_channels, 3, 1, 1))
         layers.append(nn.ReLU())
         self.layers = nn.Sequential(*layers)
         self.pool_layer = nn.AdaptiveAvgPool2d(out_shape)
     def forward(self, x, y):
+        dtype = next(self.parameters()).dtype
+        x = x.to(dtype)
+        y = y.to(dtype)
         input = th.cat([x,y], dim=1)
         return th.flatten(self.pool_layer(self.layers(input)),start_dim=1)
 
@@ -57,9 +61,9 @@ class ConvFeatureExtractor(BaseFeaturesExtractor):
 
         assert self.conv_configs is not None, "conv_configs must be provided in extractor_config"
 
-        super(ConvFeatureExtractor, self).__init__(observation_space, features_dim=1)  # Dummy features_dim
+        super(ConvFeatureExtractor, self).__init__(observation_space, features_dim=config["features_dim"])  # Dummy features_dim
 
-        in_channels = observation_space.shape[2]
+        in_channels = observation_space.shape[0]
         conv_layers = []
         for conv_conf in self.conv_configs:
             out_channels = conv_conf['out_channels']
@@ -74,12 +78,10 @@ class ConvFeatureExtractor(BaseFeaturesExtractor):
             in_channels = out_channels
 
         self.conv = nn.Sequential(*conv_layers)
-        self.features_dim = config["features_dim"]
 
     def forward(self, observations: th.Tensor) -> th.Tensor:
-        # observations shape: (batch_size, height, width, channels)
-        x = observations.permute(0, 3, 1, 2)
-        x = self.conv(x)
+        # observations shape: (batch_size, channels, height, width)
+        x = self.conv(observations)
         return x
 
 class MaplePolicy(ActorCriticPolicy):

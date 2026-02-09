@@ -16,7 +16,7 @@ class SokobanCompactWrapper(gym.ObservationWrapper):
         # New observation space: (4, grid_h, grid_w) - channels first for PyTorch
         self.observation_space = Box(
             low=0, high=1,
-            shape=(4*self.grid_h*self.grid_w,),
+            shape=(4,self.grid_h,self.grid_w,),
             dtype=np.float32
         )
 
@@ -57,7 +57,7 @@ class SokobanCompactWrapper(gym.ObservationWrapper):
                     if new_r == 238:
                         grid_obs[2, i, j] = 1.0
                     grid_obs[3, i, j] = 1.0
-        return grid_obs.flatten()
+        return grid_obs
 
 class SokobanCanonicalCompactWrapper(gym.ObservationWrapper):
     def __init__(self, env, canonical_shape):
@@ -115,12 +115,13 @@ class SokobanCanonicalCompactWrapper(gym.ObservationWrapper):
 
 class SokobanRetriesWrapper(SokobanEnv):
     def __init__(self, max_retries=3, *args, **kwargs):
-        super().__init__(*args, **kwargs)
         self.max_retries = max_retries
         self.current_retry = 0
         
         # Placeholder for the saved level state
         self.saved_state = None
+
+        super().__init__(*args, **kwargs)
 
     def reset(self, seed=None, options=None, second_player=False, render_mode='rgb_array', force_retry=False, force_new_level=False):
         """
@@ -197,7 +198,7 @@ class SokobanRetriesWrapper(SokobanEnv):
         
         self.num_env_steps = 0
         self.reward_last = 0
-        self.boxes_on_target = 0 # This will naturally update on first step, or we can recalc here if needed
+        self.boxes_on_target = 0 
         
         # 3. Generate initial observation
         starting_observation = self.render(mode=render_mode)

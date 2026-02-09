@@ -80,6 +80,7 @@ class SokobanEnv(gym.Env):
         self._calc_reward()
 
         terminated = self._check_if_all_boxes_on_target()
+
         truncated = self._check_if_maxsteps()
 
         # Convert the observation to RGB frame

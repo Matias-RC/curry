@@ -143,7 +143,7 @@ class Maple(PPO):
         self.dynamic_buffer = self.dynamic_buffer_class(**self.dynamic_buffer_kwargs)
         #===========================================================================
         self.policy = self.policy_class(  # type: ignore[assignment]
-            self.observation_space, self.action_space, self.lr_schedule, use_sde=self.use_sde, **self.policy_kwargs
+            self.observation_space, self.action_space, self.lr_schedule, **self.policy_kwargs
         )
         #=====================================================================
         self.consolidator = self.consolidator_class(**self.consolidator_kwargs)
@@ -158,19 +158,10 @@ class Maple(PPO):
 
             self.clip_range_vf = FloatSchedule(self.clip_range_vf)
 
-    def _update_dynamic_buffer(self, contents, past_infos, current_prefix):
-        # current_prefix is (Actor_Tensor_Batch, Critic_Tensor_Batch)
-        a_prefix_batch, c_prefix_batch = current_prefix
+    def _update_dynamic_buffer(self, contents, past_infos):
         current_obs, actions, rewards, episode_starts, values, log_probs = contents
 
         for idx, _ in enumerate(past_infos):
-            # Slice out the specific prefix for this environment
-            # We use detach() because we don't want to store the whole computation graph
-            env_prefix = (
-                a_prefix_batch[idx].detach(), 
-                c_prefix_batch[idx].detach()
-            )
-
             self.dynamic_buffer.append_step(
                 env_idx=idx, 
                 obs=current_obs[idx], 
@@ -178,8 +169,7 @@ class Maple(PPO):
                 rewards=rewards[idx],
                 episode_starts=episode_starts[idx],
                 values=values[idx],
-                log_probs=log_probs[idx],
-                prefix=env_prefix
+                log_probs=log_probs[idx]
             )
 
     def maybe_update_prefixes(self, infos, dones):
@@ -214,6 +204,7 @@ class Maple(PPO):
                     c_prefix = self.dynamic_buffer.current_prefixes[1][idx].detach().clone().requires_grad_(True)
 
                     T = obs.shape[0]
+
                     # Expand to (T, C, H, W) to match the trajectory length
                     a_prefix_exp = a_prefix.unsqueeze(0).expand(T, *a_prefix.shape)
                     c_prefix_exp = c_prefix.unsqueeze(0).expand(T, *c_prefix.shape)
@@ -222,7 +213,7 @@ class Maple(PPO):
                     with th.enable_grad():
                         # Policy now takes a tuple (actor_prefix, critic_prefix)
                         _, values, log_probs = self.policy(obs, (a_prefix_exp, c_prefix_exp))
-                        values, log_probs = values.squeeze(), log_probs.squeeze()
+                        values, log_probs = values.flatten(), log_probs.flatten()
 
                         # 3. Value Loss (Targets Critic Prefix)
                         returns = th.zeros(T, device=self.device)
@@ -277,7 +268,9 @@ class Maple(PPO):
     def maybe_flush_buffer(self, contents, past_infos):
         _, _, _, episode_starts, _, _ = contents
         for idx, info in enumerate(past_infos):
-            if info.get("retries_left") == 0 and episode_starts[idx]:
+            if not episode_starts[idx]:
+                continue
+            elif info.get("retries_left") == 0:
                 # Get the trajectory of the FIRST attempt (Prefix = 0)
                 # This is the input for the Consolidator training
                 traj_first = self.dynamic_buffer.get_first_attempt(env_idx=idx)
@@ -291,8 +284,11 @@ class Maple(PPO):
                     "input_obs": traj_first['obs'], # The "Error" sequence
                     "target_prefixes": (target_actor_prefix, target_critic_prefix)
                 })
+                self.num_timesteps += traj_first["obs"].shape[0] + traj_last["obs"].shape[0]
                 # Clear Dynamic Buffer for this env to start fresh on next level
                 self.dynamic_buffer.reset_env(env_idx=idx)
+            else:
+                self.dynamic_buffer._start_new_retry(idx)
 
     def collect_rollouts(
         self,
@@ -306,14 +302,16 @@ class Maple(PPO):
         self.policy.set_training_mode(False)
         self.consolidator.set_training_mode(False)
 
-        n_steps = 0
+        self.env.envs[0].env.env.current_retry = 0
+
+        #Aparently we recive an obs beforehand
         rollout_buffer.reset()
 
         #TODO: make maple callback
         callback.on_rollout_start()
 
         #Make observation prefixes
-        actor_init, critic_init = self.consolidator._init_empty(self.n_envs) 
+        actor_init, critic_init = self.consolidator._init_empty(self.n_envs, env.observation_space._shape) 
         
         assert isinstance(actor_init, th.Tensor), "prefixes must be tensors"
         assert isinstance(critic_init, th.Tensor), "prefixes must be tensors"
@@ -336,9 +334,7 @@ class Maple(PPO):
             if isinstance(self.action_space, spaces.Box):
                 clipped_actions = np.clip(actions, self.action_space.low, self.action_space.high)
 
-            new_obs, rewards, infos, dones = env.step(clipped_actions)
-
-            self.num_timesteps += env.num_envs
+            new_obs, rewards, dones, infos = env.step(clipped_actions)
 
             # Give access to local variables
             callback.update_locals(locals())
@@ -346,7 +342,6 @@ class Maple(PPO):
                 return False
 
             self._update_info_buffer(infos, dones)
-            n_steps += 1
 
             if isinstance(self.action_space, spaces.Discrete):
                 # Reshape in case of discrete action
@@ -362,15 +357,18 @@ class Maple(PPO):
                     with th.no_grad():
                         terminal_value = self.policy.predict_values(terminal_obs, self.dynamic_buffer.current_prefixes)[0]
                     rewards[idx] += self.gamma * terminal_value
-
-            self._update_dynamic_buffer((self._last_obs, actions, rewards,self._last_episode_starts,
-                                            values, log_probs),
-                                            self._past_infos) 
             
-            #Check with dones if end of play check with infos idx of the play/replay
-            self.maybe_update_prefixes(self._past_infos, self._last_episode_starts) # The rest are updated with simplified gradient descent
+            
+            # We feed the observation gotten the last step, if this step resulted in terminal (+10 reward) then:
+            # Last episode starts is still false, last obs is not a terminal state value corresponds to past reward plus diminished future value
+            # Should work as intended
+            self._update_dynamic_buffer((self._last_obs, actions,rewards,self._last_episode_starts,
+                                            values, log_probs),
+                                            infos) 
 
-            self.maybe_flush_buffer((self._last_obs, actions, rewards,self._last_episode_starts,
+            self.maybe_update_prefixes(self._past_infos, dones)
+
+            self.maybe_flush_buffer((self._last_obs, actions, rewards,dones,
                                             values, log_probs),
                                             self._past_infos) 
 
@@ -378,7 +376,6 @@ class Maple(PPO):
             self._last_obs = new_obs
             self._past_infos = infos
             self._last_episode_starts = dones
-            n_steps = rollout_buffer.get_current_size()
 
         with th.no_grad():
             # Compute value for the last timestep

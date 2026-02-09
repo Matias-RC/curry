@@ -150,12 +150,10 @@ if __name__ == "__main__":
     #    max_steps=200,
     #    deterministic=False,
     #)
-    from maple_ppo import MAPLE_RecurrentPPO
-    from consolidator_class import Consolidator
 
-    model = MAPLE_RecurrentPPO(
+
+    model = RecurrentPPO(
         RecurrentActorCriticPolicy,
-        Consolidator,
         train_env,
         policy_kwargs=policy_kwargs,
         verbose=1,
