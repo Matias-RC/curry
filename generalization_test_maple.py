@@ -27,24 +27,22 @@ from alternative_maple_callback import MapleCallback
 
 import time
 
-# ============================================================
-# Config (MUST MATCH TRAINING)
-# ============================================================
 SEED = 67
 DIM_ROOM = (10, 10)
 MAX_STEPS = 30
 NUM_BOXES = 1
 
-num_beam_search_steps = 10
-beam_size = 64
+num_beam_search_steps = 30
+beam_size = 5
 
 NUM_RETRIES = num_beam_search_steps*beam_size # This way we dont face retries problems
 
 HIDDEN_SIZE_CHANNELS = 64
 POOL_SHAPE = 4
 
-RUN_ID = 0  # <-- change this to the run you want to load
-BASE_DIR = Path("./models") / str(RUN_ID)
+RUN_ID = 2  # <-- change this to the run you want to load
+ITER = 50
+BASE_DIR = Path("./models") / str(RUN_ID) / f"iter_{ITER}"
 
 DEVICE = "cuda" if th.cuda.is_available() else "cpu"
 
@@ -224,7 +222,7 @@ from torch.utils.data import TensorDataset, DataLoader
 # Constants provided
 INNER_EPOCHS = 5
 BATCH_SIZE = 20
-PREFIX_LR = 0.008
+PREFIX_LR = 0.001
 MAX_GRAD_NORM = 0.5 
 
 class Prefix(nn.Module):
@@ -277,28 +275,28 @@ class Prefix(nn.Module):
 
 def compute_returns_and_advantages(rewards, values, episode_starts, gamma=0.99, gae_lambda=0.95):
     """
-    Computes GAE (Generalized Advantage Estimation) while respecting episode boundaries.
-    Args:
-        rewards: Tensor (T,)
-        values: Tensor (T,)
-        episode_starts: Tensor (T,) - Boolean or 0/1, where 1 indicates the start of a NEW episode.
+    Computes GAE and TD(0) targets while respecting episode boundaries.
     """
     returns = th.zeros_like(rewards)
     advantages = th.zeros_like(rewards)
+    td0_targets = th.zeros_like(rewards) # <--- New storage for TD(0)
     
     last_gae_lam = 0
     next_value = 0 
     
     # Iterate backwards through the trajectory
     for t in reversed(range(len(rewards))):
-        # If t+1 is the start of a new episode, then step t was terminal.
-        # We should NOT look at values[t+1] (mask it out).
         if t == len(rewards) - 1:
-            next_non_terminal = 0.0 # Assume trajectory ends cleanly or bootstrap is handled externally
+            next_non_terminal = 0.0 
         else:
-            # If the NEXT step starts a new episode, current step is terminal
             next_non_terminal = 1.0 - episode_starts[t + 1]
 
+        # --- Calculate TD(0) Target ---
+        # Target = Reward + Gamma * Value(Next_State) * Mask
+        # Note: 'next_value' here comes from the frozen rollout values (semi-gradient)
+        td0_targets[t] = rewards[t] + gamma * next_value * next_non_terminal
+
+        # Standard GAE Calculation
         delta = rewards[t] + gamma * next_value * next_non_terminal - values[t]
         last_gae_lam = delta + gamma * gae_lambda * next_non_terminal * last_gae_lam
         
@@ -307,7 +305,7 @@ def compute_returns_and_advantages(rewards, values, episode_starts, gamma=0.99, 
         
         next_value = values[t]
         
-    return returns, advantages
+    return returns, advantages, td0_targets
 
 def update_prefixes(
     dynamic_buffer, 
@@ -316,14 +314,13 @@ def update_prefixes(
     model
 ):
     """
-    Calculates loss from history and calls prefix_module.optimize_step().
+    Calculates loss from history (TD0 for Value) and calls prefix_module.optimize_step().
     """
     
     # 1. Retrieve Data
     traj = dynamic_buffer.get_all_attempts(idx)
     if len(traj) == 0: return
 
-    # Helper to convert/cast
     def to_tensor(x):
         if isinstance(x, np.ndarray): x = th.from_numpy(x)
         return x.to(device=model.device, dtype=th.float32)
@@ -334,9 +331,10 @@ def update_prefixes(
     old_values = to_tensor(traj['values'])
     episode_starts = to_tensor(traj['episode_starts'])
 
-    # 2. Compute Targets (GAE)
+    # 2. Compute Targets
     with th.no_grad():
-        returns, advantages = compute_returns_and_advantages(
+        # <--- Get td0_targets
+        returns, advantages, td0_targets = compute_returns_and_advantages(
             rewards, old_values, episode_starts,
             gamma=model.gamma, gae_lambda=model.gae_lambda
         )
@@ -344,25 +342,22 @@ def update_prefixes(
             advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
     # 3. Create Loader
-    dataset = TensorDataset(obs, actions, returns, advantages)
+    # <--- Add td0_targets to dataset
+    dataset = TensorDataset(obs, actions, returns, advantages, td0_targets)
     curr_batch_size = min(BATCH_SIZE, len(obs))
     dataloader = DataLoader(dataset, batch_size=curr_batch_size, shuffle=True)
 
     # 4. Optimization Loop
     model.policy.set_training_mode(True)
-    
-    # We get the parameter ONCE to expand it for batching inside the loop
-    # (Note: we don't detach here because we need the graph for the optimizer step)
     target_param = prefix_module.get_prefix_for_optim(idx) 
 
     for _ in range(INNER_EPOCHS):
-        for batch_obs, batch_actions, batch_returns, batch_adv in dataloader:
+        # <--- Unpack batch_td0
+        for batch_obs, batch_actions, batch_returns, batch_adv, batch_td0 in dataloader:
             
-            # Expand for Batch: The policy needs (Batch_Size, ...)
-            # target_param is (2, C, H, W) -> need (Batch, C, H, W)
             T_batch = batch_obs.shape[0]
             
-            # [0] is Actor, [1] is Critic
+            # Expand prefixes
             a_prefix_exp = target_param[0].unsqueeze(0).expand(T_batch, *target_param[0].shape)
             c_prefix_exp = target_param[1].unsqueeze(0).expand(T_batch, *target_param[1].shape)
 
@@ -375,23 +370,21 @@ def update_prefixes(
             
             # Loss Calculation
             values = values.flatten()
-            v_loss = 0.5 * F.mse_loss(values, batch_returns)
+            
+            # <--- CHANGED: Minimizing MSE against TD(0) targets instead of Returns
+            v_loss = 0.5 * F.mse_loss(values, batch_td0)
+            
             p_loss = -(log_probs * batch_adv).mean()
             total_loss = p_loss + v_loss
             
-            # 5. Delegate Update to Module
-            # This handles zero_grad, backward, clip, and step internally
+            # 5. Delegate Update
             prefix_module.optimize_step(idx, total_loss, max_grad_norm=MAX_GRAD_NORM)
             
     # 6. Update Buffer Pointers
-    # Since prefix_module manages the "Master" params, we just ensure 
-    # the dynamic buffer points to the updated tensors for the next rollout.
-    # We re-fetch the batch to get the updated values.
     current_a_batch, current_c_batch = prefix_module.get_current_batch_prefixes()
 
     dynamic_buffer.reset_env(env_idx=idx)
     
-    # Update the legacy buffer format
     with th.no_grad():
         dynamic_buffer.current_prefixes[0][idx] = current_a_batch[idx].detach()
         dynamic_buffer.current_prefixes[1][idx] = current_c_batch[idx].detach()

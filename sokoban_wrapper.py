@@ -142,7 +142,7 @@ class SokobanRetriesWrapper(SokobanEnv):
         # --- PATH 2: NEW LEVEL ---
         # Otherwise, we generate a fresh level using the parent logic
         # print("DEBUG: Generating new level")
-        obs, info = super().reset(seed=321, options=options, second_player=second_player, render_mode=render_mode)
+        obs, info = super().reset(seed=seed, options=options, second_player=second_player, render_mode=render_mode)
         
         # Save this fresh configuration immediately
         self._save_level_state()

@@ -19,10 +19,93 @@ from alternative_maple_policy import MaplePolicy, PrefixCombinator, ConvFeatureE
 from alternative_maple import Maple
 from alternative_maple_buffers import MapleRolloutBuffer, DynamicReplayBuffer
 from alternative_maple_callback import MapleCallback
-"""
-next_maple_img = pygame.image.load("next.png").convert_alpha()
-stop_maple_img = pygame.image.load("stop_maple.png").convert_alpha()
-"""
+import os
+from pathlib import Path
+from stable_baselines3.common.callbacks import BaseCallback
+
+class MapleCheckpointCallback(BaseCallback):
+    """
+    Custom callback for saving MAPLE model components every `save_freq` iterations.
+    """
+    def __init__(self, save_freq: int, save_path: str, verbose: int = 0):
+        super().__init__(verbose)
+        self.save_freq = save_freq
+        self.base_save_path = Path(save_path)
+        self.run_dir = None
+        self.iteration = 0
+
+    def _init_callback(self) -> None:
+        # Create the base directory if it doesn't exist
+        self.base_save_path.mkdir(parents=True, exist_ok=True)
+
+        # Determine the next Run ID (e.g., models/0, models/1, etc.)
+        ids = [int(d.name) for d in self.base_save_path.iterdir() if d.is_dir() and d.name.isdigit()]
+        run_id = max(ids) + 1 if ids else 1
+        
+        # Create the specific directory for this run
+        self.run_dir = self.base_save_path / str(run_id)
+        self.run_dir.mkdir(parents=True, exist_ok=True)
+        
+        if self.verbose > 0:
+            print(f"[MAPLE Callback] Logging checkpoints to: {self.run_dir}")
+
+    def _on_step(self) -> bool:
+        return True
+
+    def _on_rollout_end(self) -> None:
+        """
+        This event is triggered before updating the policy, after a rollout is collected.
+        This corresponds to one 'iteration'.
+        """
+        self.iteration += 1
+
+        if self.iteration % self.save_freq == 0:
+            self.save_checkpoint()
+
+    def save_checkpoint(self):
+        # Create a sub-directory for this specific iteration
+        ckpt_dir = self.run_dir / f"iter_{self.iteration}"
+        ckpt_dir.mkdir(parents=True, exist_ok=True)
+
+        if self.verbose > 0:
+            print(f"[MAPLE Callback] Saving checkpoint to {ckpt_dir}...")
+
+        # --- 1. Save Policy ---
+        policy_dir = ckpt_dir / "policy"
+        policy_dir.mkdir(exist_ok=True)
+        th.save(self.model.policy.state_dict(), policy_dir / "policy_state_dict.pt")
+        
+        # Save optimizer if it exists
+        if hasattr(self.model.policy, "optimizer") and self.model.policy.optimizer is not None:
+            th.save(self.model.policy.optimizer.state_dict(), policy_dir / "policy_optimizer_state_dict.pt")
+
+        # --- 2. Save Consolidator (Custom Component) ---
+        if hasattr(self.model, "consolidator") and self.model.consolidator is not None:
+            consolidator_dir = ckpt_dir / "consolidator"
+            consolidator_dir.mkdir(exist_ok=True)
+            th.save(self.model.consolidator.state_dict(), consolidator_dir / "consolidator_state_dict.pt")
+
+            if hasattr(self.model.consolidator, "optimizer") and self.model.consolidator.optimizer is not None:
+                th.save(self.model.consolidator.optimizer.state_dict(), consolidator_dir / "consolidator_optimizer_state_dict.pt")
+
+        # --- 3. Save Buffers (Optional - can be large) ---
+        # Note: Saving buffers every checkpoint can consume massive disk space. 
+        # Comment these out if you only want weights.
+        if hasattr(self.model, "rollout_buffer") and self.model.rollout_buffer is not None:
+            buffer_dir = ckpt_dir / "rollout_buffer"
+            buffer_dir.mkdir(exist_ok=True)
+            # Saving __dict__ is quick but fragile; standard pickling preferred for buffers
+            th.save(self.model.rollout_buffer, buffer_dir / "rollout_buffer_obj.pt")
+
+        if hasattr(self.model, "dynamic_buffer") and self.model.dynamic_buffer is not None:
+            dyn_buffer_dir = ckpt_dir / "dynamic_buffer"
+            dyn_buffer_dir.mkdir(exist_ok=True)
+            th.save(self.model.dynamic_buffer, dyn_buffer_dir / "dynamic_buffer_obj.pt")
+
+        # --- 4. Save Metadata ---
+        meta = {"iteration": self.iteration, "timesteps": self.num_timesteps}
+        th.save(meta, ckpt_dir / "meta.pt")
+
 SHARE_PREFIX_COMBINATOR=False #Currently implemented consolidator only allows for
 SHARE_FEATURES_EXTRACTOR=True
 HIDDEN_SIZE_CHANNELS = 64
@@ -125,7 +208,7 @@ if __name__ == "__main__":
     MAX_STEPS = 22
     MAX_STEPS_EVAL = 20
     NUM_BOXES = 1
-    NUM_RETRIES = 5
+    NUM_RETRIES = 4
 
     train_env = make_env(dim_room=DIM_ROOM,
                                max_steps=MAX_STEPS,
@@ -156,8 +239,16 @@ if __name__ == "__main__":
         num_retries=NUM_RETRIES,
     )
 
-    model.learn(total_timesteps=200_000)
-    # ============================================================
+    checkpoint_callback = MapleCheckpointCallback(
+            save_freq=10, 
+            save_path="./models", 
+            verbose=1
+        )
+
+    model.learn(total_timesteps=120_000, callback=checkpoint_callback)
+
+
+"""    # ============================================================
     # Save all MAPLE components as Torch state_dicts (versioned)
     # ============================================================
     import os
@@ -257,3 +348,4 @@ if __name__ == "__main__":
     th.save(meta, RUN_DIR / "meta.pt")
 
     print("[MAPLE] All components saved successfully.")
+"""
