@@ -233,6 +233,12 @@ class DynamicReplayBuffer:
 
     def get_last_attempt(self, env_idx):
         return self._format_traj(self.history[env_idx][-1])
+    
+    def get_all_attempts(self, env_idx):
+         hist = []
+         for i in self.history[env_idx]:
+              hist += i
+         return self._format_traj(hist)
 
     def _format_traj(self, list_of_dicts):
         """Converts list of step dicts into a dict of numpy arrays."""

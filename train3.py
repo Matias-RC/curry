@@ -156,7 +156,7 @@ if __name__ == "__main__":
         num_retries=NUM_RETRIES,
     )
 
-    model.learn(total_timesteps=1000)
+    model.learn(total_timesteps=200_000)
     # ============================================================
     # Save all MAPLE components as Torch state_dicts (versioned)
     # ============================================================
@@ -247,7 +247,7 @@ if __name__ == "__main__":
     meta = {
         "run_id": RUN_ID,
         "seed": SEED,
-        "total_timesteps": 100_000,
+        "total_timesteps": 200_000,
         "share_prefix_combinator": SHARE_PREFIX_COMBINATOR,
         "share_features_extractor": SHARE_FEATURES_EXTRACTOR,
         "hidden_size_channels": HIDDEN_SIZE_CHANNELS,

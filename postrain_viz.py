@@ -120,6 +120,7 @@ class SokobanGrid:
         common_seed = seed if seed is not None else np.random.randint(0, 100000)
         
         self.obs = []
+        self._last_episode_starts = []
         for i, env in enumerate(self.envs):
             # If force_new_level is True, everyone gets the COMMON seed
             # If force_new_level is False (retry), we just call reset(force_retry=True)
@@ -129,23 +130,37 @@ class SokobanGrid:
                 o, _ = env.reset(force_retry=True)
             self.obs.append(o)
             self.lstm_states[i] = None # Reset memory if applicable
+            self._last_episode_starts.append(True)
 
     def step_all(self):
         """Step all agents forward one frame."""
         for i, (env, agent) in enumerate(zip(self.envs, self.agents)):
-            # Predict
-            action, self.lstm_states[i] = agent.predict(self.obs[i], state=self.lstm_states[i])
-            
-            # Step
-            obs, reward, terminated, truncated, info = env.step(int(action))
-            self.obs[i] = obs
-            
-            # Auto-Retry Logic (Per Agent)
-            # If this specific agent finishes, it retries immediately while others keep going
-            if terminated or truncated:
-                obs, _ = env.reset(force_retry=True)
-                self.obs[i] = obs
-                self.lstm_states[i] = None
+            if agent["type"] == "lstm":
+                if self._last_episode_starts[i]:
+                    obs, _ = env.reset(force_retry=True)
+                    self.obs[i] = obs
+                    self.lstm_states[i] = None
+                    terminated = False
+                    truncated = False
+                    self._last_episode_starts[i] = False
+                else:
+                    # Predict
+                    action, self.lstm_states[i] = agent["agent"].predict(self.obs[i], state=self.lstm_states[i])
+                
+                    # Step
+                    obs, reward, terminated, truncated, info = env.step(int(action))
+                    
+                    self.obs[i] = obs
+                
+                # Auto-Retry Logic (Per Agent)
+                # If this specific agent finishes, it retries immediately while others keep going
+                if (terminated or truncated):
+                    self.lstm_states[i] = None
+                    self._last_episode_starts[i] = True
+            elif agent["type"] == "maple":
+                pass
+            else:
+                raise ValueError("This agent type is not recognized")
 
     def render_to_surface(self):
         """Stitches all environments into the internal surface and returns it."""
@@ -230,10 +245,10 @@ def main():
     
     # For now, let's use 3 Random Agents to demonstrate side-by-side comparison
     agents = [
-        RandomAgent(gym.spaces.Discrete(9)), 
-        RandomAgent(gym.spaces.Discrete(9)), 
-        RandomAgent(gym.spaces.Discrete(9)),
-        RandomAgent(gym.spaces.Discrete(9))
+        {"agent": RandomAgent(gym.spaces.Discrete(9)), "type":"lstm"}, 
+        {"agent": RandomAgent(gym.spaces.Discrete(9)), "type":"lstm"}, 
+        {"agent": RandomAgent(gym.spaces.Discrete(9)), "type":"lstm"},
+        {"agent": RandomAgent(gym.spaces.Discrete(9)), "type":"lstm"}
     ]
 
     # --- SETUP GRID MANAGER ---
@@ -304,9 +319,16 @@ def main():
         screen.blit(grid_surface, (0, 0))
 
         pygame.display.flip()
-        clock.tick(20 if not paused else 60)
+        clock.tick(15 if not paused else 60)
 
     pygame.quit()
+"""
+TODO:
+-modify the make env function  to allow class assignation for ppo derived models
+-implement the logic for the maple agent
+-implement the logic for the beam search maple agent
+"""
+
 
 if __name__ == "__main__":
     main()
