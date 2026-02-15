@@ -6,8 +6,7 @@ from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv
 
-# --- Import your existing environment helpers ---
-# Assuming these are in your local directory as per your snippet
+import numpy as np
 from gym_sokoban.envs import SokobanEnv
 from sokoban_wrapper import SokobanCompactWrapper, SokobanRetriesWrapper
 import os
@@ -128,10 +127,6 @@ class BaselineComparableCNN(BaseFeaturesExtractor):
             
         self.backbone = nn.Sequential(*conv_layers)
 
-        # --- PART B: The Head (Identical to PrefixCombinator layers) ---
-        # In MAPLE, input to this is (Backbone + Prefix). 
-        # Here, input is just Backbone.
-        
         c_in = in_channels 
         c_hidden = combinator_kwargs["hidden_channels"]
         c_out_head = combinator_kwargs["out_channels"]
@@ -219,10 +214,10 @@ def make_env(dim_room, max_steps, num_boxes, num_retries, seed=42):
     env = Monitor(env)
     env.reset(seed=seed)
     return env
-
-# ==============================================================================
-# 4. Main Execution
-# ==============================================================================
+# There are several things to work on for next days.
+# 1st: Ensure that  what I am researching is actually novel
+# 2nd: Improve the consolidator and prefix generation for stronger performance
+# 3rd: do some interpretation of the prefixes\
 if __name__ == "__main__":
     
     # Create Env

@@ -244,8 +244,29 @@ if __name__ == "__main__":
             save_path="./models", 
             verbose=1
         )
+    def count_parameters(module):
+        return sum(p.numel() for p in module.parameters())
 
-    model.learn(total_timesteps=120_000, callback=checkpoint_callback)
+    def count_trainable_parameters(module):
+        return sum(p.numel() for p in module.parameters() if p.requires_grad)
+
+    total = 0
+
+    # Policy
+    policy_params = count_trainable_parameters(model.policy)
+    print(f"Policy parameters: {policy_params:,}")
+    total += policy_params
+
+    # Consolidator
+    if hasattr(model, "consolidator") and model.consolidator is not None:
+        consolidator_params = count_trainable_parameters(model.consolidator)
+        print(f"Consolidator parameters: {consolidator_params:,}")
+        total += consolidator_params
+
+    print(f"\nTotal trainable parameters: {total:,}")
+
+
+    #model.learn(total_timesteps=120_000, callback=checkpoint_callback)
 
 
 """    # ============================================================

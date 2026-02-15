@@ -324,8 +324,6 @@ class SokobanEnv(gym.Env):
         if num_gen_steps is not None:
             self.num_gen_steps = num_gen_steps
 
-        # force regeneration on next reset
-        self.num_env_steps = 0
 
 
 ACTION_LOOKUP = {

@@ -27,6 +27,8 @@ from alternative_maple_callback import MapleCallback
 
 import time
 
+import pygame
+
 SEED = 67
 DIM_ROOM = (10, 10)
 MAX_STEPS = 30
@@ -477,8 +479,44 @@ def flush_beamer(dynamic_buffer, contents, past_infos, model: Maple, prefix_modu
 
     return prefix_module
 
+def show_case(model:Maple, eval_env, dones, infos, beam_stats):
+    if not dones[0]:
+        pass
+    elif infos[0].get("retry_count", 0) % beam_size == 0:
 
-def test_rollout(model):
+        SCALE = 3
+        H, W = 160, 160
+
+        screen = pygame.display.set_mode((W*SCALE, H*SCALE))
+        clock = pygame.time.Clock()
+
+        # create surface ONCE
+        surface = pygame.Surface((W, H))
+        terminated  = True
+        truncated = True
+        running = True
+        while running:
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    running = False
+            if terminated or truncated:
+                obs, _ = eval_env.reset()
+                terminated = False
+                truncated = False
+            else:
+                action = model.policy(obs_as_tensor(obs, model.device).unsqueeze(0), model.dynamic_buffer.current_prefixes)
+                obs, reward, terminated, truncated, info = eval_env.step(int(action[0]))
+            rgb = eval_env.render()
+            surfarray.blit_array(surface, rgb.swapaxes(0, 1))
+            surface_scaled = pygame.transform.scale(surface, (W * SCALE, H * SCALE))
+            screen.blit(surface_scaled, (0, 0))
+            pygame.display.flip()
+            clock.tick(10)
+
+        pygame.display.quit()
+        
+
+def test_rollout(model, eval_env):
     # Setup
     model._last_obs = model.env.reset()
 
@@ -523,6 +561,8 @@ def test_rollout(model):
             beam_stats  # <--- Pass the stats dict
         )
 
+        show_case(model, eval_env, dones, infos, beam_stats)
+
         # 4. Advance
         model._last_obs = new_obs
         model._past_infos = infos
@@ -538,6 +578,9 @@ def test_rollout(model):
 # ============================================================
 if __name__ == "__main__":
     env = make_env(SEED)
+    eval_env = make_env(SEED)
     model = build_model(env)
     load_checkpoint(model, BASE_DIR)
-    test_rollout(model)
+    pygame.init()
+    test_rollout(model, eval_env)
+    pygame.quit()  
