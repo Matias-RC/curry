@@ -69,20 +69,26 @@ STAGE_1 = {
 }
 
 STAGE_2 = {
+    (("dim_room", (7,7)), ("max_steps", 30), ("num_boxes", 1), ("num_gen_steps", int(1.7*(6+6)))): 0.6,
+    (("dim_room", (7,7)), ("max_steps", 45), ("num_boxes", 2), ("num_gen_steps", int(1.7*(7+7)))): 0.4,
+}
+
+
+STAGE_3 = {
     (("dim_room", (7,7)), ("max_steps", 30), ("num_boxes", 1), ("num_gen_steps", int(1.7*16))): 0.5,
     (("dim_room", (8,8)), ("max_steps", 50), ("num_boxes", 2), ("num_gen_steps", int(1.7*20))): 0.5,
 }
 
-STAGE_3 = {
+"""STAGE_3 = {
     (("dim_room", (8,8)), ("max_steps", 30), ("num_boxes", 1), ("num_gen_steps", int(1.7*16))): 0.2,
     (("dim_room", (10,10)), ("max_steps", 60), ("num_boxes", 2), ("num_gen_steps", int(1.7*20))): 0.8,
 }
-
+"""
 # The Master Plan: Map Timesteps -> Schedule
 CURRICULUM_PLAN = {
     0: STAGE_1,       # Active from step 0
-    100_000: STAGE_2,  # Switch at 200k steps
-    200_000: STAGE_3
+    200_000: STAGE_2,  # Switch at 200k steps
+    400_000: STAGE_3
 }
 
 # ==============================================================================
@@ -93,7 +99,7 @@ if __name__ == "__main__":
     # --- Configuration ---
     NUM_ENVS = 8
     SEED = 123
-    TOTAL_TIMESTEPS = 500_000
+    TOTAL_TIMESTEPS = 1_000_000
     
     # 1. Environment Arguments
     # These are passed to SokoRetriesCurriculum.__init__
@@ -113,7 +119,7 @@ if __name__ == "__main__":
     # If using pixels (10x10 tiles * 16px), use (160, 160).
     # Assuming grid coords based on window_size=3:
     wrapper_kwargs = dict(
-        canonical_shape=(12, 12), 
+        canonical_shape=(9, 9), 
         window_size=3 
     )
 
@@ -127,7 +133,7 @@ if __name__ == "__main__":
         wrapper_class=SokoCanonicalWithAttPadding,
         env_kwargs=env_kwargs, 
         wrapper_kwargs=wrapper_kwargs,
-        vec_env_cls=DummyVecEnv # Change to SubprocVecEnv for true multiprocessing
+        vec_env_cls=SubprocVecEnv# Change to SubprocVecEnv for true multiprocessing
     )
 
     # 4. Instantiate PPO Model
