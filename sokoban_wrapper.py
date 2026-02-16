@@ -371,3 +371,7 @@ class SokoRetriesCurriculum(SokobanRetriesWrapper):
 
         info["retry_count"] = 0
         return obs, info
+    
+    def update_schedule(self, schedule_dic):
+        self.schedule_dic = schedule_dic
+        self.curriculum = True
