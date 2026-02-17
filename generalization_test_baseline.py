@@ -8,6 +8,7 @@ from stable_baselines3.common.monitor import Monitor
 from sokoban_wrapper import (
     SokobanCompactWrapper,
     SokobanRetriesWrapper,
+    SokobanCanonicalCompactWrapper,
 )
 
 from gymnasium import spaces
@@ -64,18 +65,18 @@ class LastLayerInstert(nn.Module):
 SEED = 67
 DIM_ROOM = (10, 10)
 MAX_STEPS = 60
-NUM_BOXES = 1
+NUM_BOXES = 4
 
 num_beam_search_steps = 30
 beam_size = 5
 
-NUM_RETRIES = num_beam_search_steps*beam_size # This way we dont face retries problems
+NUM_RETRIES = 1 # This way we dont face retries problems
 
 HIDDEN_SIZE_CHANNELS = 64
 POOL_SHAPE = 4
 
-RUN_ID = 1 # <-- change this to the run you want to load
-ITER = 50
+RUN_ID = 2 # <-- change this to the run you want to load
+ITER = 180
 BASE_DIR = Path("./models_baseline") / str(RUN_ID) / f"iter_{ITER}"
 
 DEVICE = "cuda" if th.cuda.is_available() else "cpu"
@@ -91,7 +92,7 @@ def make_env(seed):
         num_boxes=NUM_BOXES,
         render_mode="rgb_array",
     )
-    env = SokobanCompactWrapper(env)
+    env = SokobanCanonicalCompactWrapper(env, canonical_shape=(10,10))
     env = Monitor(env)
     env.reset(seed=seed)
     return env
