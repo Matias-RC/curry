@@ -1,21 +1,22 @@
 #!/bin/bash
-#SBATCH --job-name=soko_train
+#SBATCH --job-name=sokoban_rl
 #SBATCH --partition=all
-#SBATCH --nodelist=llaima
-#SBATCH --gres=gpu:1
+#SBATCH --nodelist=scylla
+#SBATCH --gres=gpu:2080_ti:1      
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=20G
+#SBATCH --cpus-per-task=32     
+#SBATCH --mem=32G                 
 #SBATCH --time=24:00:00
 #SBATCH --output=logs/train_%j.out
 #SBATCH --error=logs/train_%j.err
 #SBATCH --mail-user=matias.rodriguez@cenia.cl
 #SBATCH --mail-type=BEGIN,END,FAIL
 
+# Usamos la ruta absoluta que sale en tu prompt para evitar errores
 source /home/matias_rodriguez/miniconda3/etc/profile.d/conda.sh
-conda activate /home/matias_rodriguez/curry/.venv
+conda activate /mnt-homes/dccnas/CristianBuc/matias_rodriguez/curry/.venv
 
 mkdir -p models_vec tensorboard logs
 
-python -u train5.py
+python -u train4.py

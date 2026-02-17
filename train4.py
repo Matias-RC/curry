@@ -156,8 +156,8 @@ HIDDEN_SIZE_CHANNELS = 64
 POOL_SHAPE = 4
 SEED = 43
 NUM_RETRIES = 2
-NUM_ENVS = 8
-TOTAL_TIMESTEPS = 1_000_000
+NUM_ENVS = 32
+TOTAL_TIMESTEPS = 1_500_000
 
 # Defines the MAX size your curriculum will ever reach.
 # If your curriculum goes up to 10x10, set this to (10,10) or (12,12).
@@ -176,7 +176,7 @@ STAGE_3 = {
     (("dim_room", (7,7)), ("max_steps", 30), ("num_boxes", 1), ("num_gen_steps", int(1.7*14))): 0.5,
     (("dim_room", (8,8)), ("max_steps", 50), ("num_boxes", 2), ("num_gen_steps", int(1.7*16))): 0.5,
 }
-CURRICULUM_PLAN = {0: STAGE_1, 200_000: STAGE_2, 400_000: STAGE_3}
+CURRICULUM_PLAN = {0: STAGE_1, 500_000: STAGE_2, 900_000: STAGE_3}
 
 net_config = {
     "features_extractor_kwargs": {
@@ -226,7 +226,7 @@ if __name__ == "__main__":
     initial_value=1e-3,      # Start here
     final_value=2e-4,        # End here
     total_timesteps=TOTAL_TIMESTEPS,
-    endpoint_step=100_000    # Reach final value here
+    endpoint_step=800_000    # Reach final value here
     )
     # 1. Env Args
     env_kwargs = dict(
@@ -263,8 +263,8 @@ if __name__ == "__main__":
         policy="CnnPolicy",
         env=vec_env,
         learning_rate=lr_schedule,
-        n_steps=2048,
-        batch_size=64,
+        n_steps=256,
+        batch_size=1024,
         verbose=1,
         tensorboard_log="./tensorboard_baseline/",
         seed=SEED,
@@ -279,7 +279,7 @@ if __name__ == "__main__":
 
     # 4. Callbacks & Train
     curriculum_cb = VectorCurriculumCallback(CURRICULUM_PLAN, verbose=1)
-    checkpoint_cb = BaselineCheckpointCallback(save_freq=10, save_path="./models_baseline/", verbose=1)
+    checkpoint_cb = BaselineCheckpointCallback(save_freq=20, save_path="./models_baseline/", verbose=1)
     callbacks = CallbackList([curriculum_cb, checkpoint_cb])
 
     print("Starting Training...")
