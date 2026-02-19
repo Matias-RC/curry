@@ -19,7 +19,7 @@ from sokoban_wrapper import SokobanCompactWrapper, SokobanRetriesWrapper
 # ==============================================================================
 
 SEED = 67
-DIM_ROOM = (10, 10)
+DIM_ROOM = (7, 7)
 MAX_STEPS = 60
 NUM_BOXES = 1
 
@@ -39,8 +39,8 @@ HIDDEN_SIZE_CHANNELS = 64
 POOL_SHAPE = 4
 FEATURES_DIM = HIDDEN_SIZE_CHANNELS * POOL_SHAPE * POOL_SHAPE  # 1024
 
-RUN_ID = 1 
-ITER = 50
+RUN_ID = 2
+ITER = 180
 BASE_DIR = Path("./models_baseline") / str(RUN_ID) / f"iter_{ITER}"
 
 DEVICE = "cuda" if th.cuda.is_available() else "cpu"
