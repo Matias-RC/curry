@@ -213,7 +213,7 @@ class SokobanRetriesWrapper(SokobanEnv):
         }
         
         return starting_observation, info
-    
+
 
 class SokoCanonicalWithAttPadding(gym.ObservationWrapper):
     def __init__(self, env, canonical_shape, window_size):
