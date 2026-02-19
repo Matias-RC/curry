@@ -136,7 +136,6 @@ if __name__ == "__main__":
         ),
     )
 
-    callbacks = CallbackList([curriculum_cb])
 
     # 6. Train
     print("Starting Training...")

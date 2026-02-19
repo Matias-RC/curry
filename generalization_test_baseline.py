@@ -19,7 +19,7 @@ import torch.nn as nn
 from stable_baselines3.common.callbacks import BaseCallback
 
 import pygame.surfarray as surfarray
-from stable_baselines3.common.utils import FloatSchedule, explained_variance, obs_as_tensor
+from stable_baselines3.common.utils import explained_variance, obs_as_tensor
 from consolidator_class import ChannelStackedSpatialAccumulation, Consolidator
 from alternative_maple_policy import MaplePolicy, PrefixCombinator, ConvFeatureExtractor
 from stable_baselines3 import PPO
@@ -63,9 +63,9 @@ class LastLayerInstert(nn.Module):
     
 
 SEED = 67
-DIM_ROOM = (10, 10)
+DIM_ROOM = (9, 9)
 MAX_STEPS = 60
-NUM_BOXES = 4
+NUM_BOXES = 1
 
 num_beam_search_steps = 30
 beam_size = 5
@@ -200,9 +200,8 @@ if __name__ == "__main__":
     load_checkpoint(model, BASE_DIR, DEVICE)
     pygame.init()
 
-
     SCALE = 3
-    H, W = 160, 160
+    H, W = 144, 144
 
     screen = pygame.display.set_mode((W*SCALE, H*SCALE))
     clock = pygame.time.Clock()
