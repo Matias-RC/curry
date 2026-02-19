@@ -13,19 +13,12 @@ from sokoban_wrapper import (
     SokoRetriesCurriculum,
     SokoCanonicalWithAttPadding,
     SokobanRetriesWrapper,
+    SokoPoolCurriculumEnv
 )
 from attpolicy import SokoPlayerCentricAtt
 
 
-# ==============================================================================
-# 1. The Vector-Ready Curriculum Callback
-# ==============================================================================
-
 class VectorCurriculumCallback(BaseCallback):
-    """
-    Updates the environment's task distribution based on total timesteps.
-    Designed to work with Vectorized Environments (VecEnv) by using env_method.
-    """
 
     def __init__(self, schedule_plan, verbose=0):
         super().__init__(verbose)
@@ -58,15 +51,18 @@ class VectorCurriculumCallback(BaseCallback):
 
         return True
 
-
-# ==============================================================================
-# 2. Define The Curriculum Schedules
-# ==============================================================================
-
-# STAGE 1: The starting mix
 STAGE_1 = {
     (("dim_room", (7, 7)), ("max_steps", 25), ("num_boxes", 1), ("num_gen_steps", int(1.7 * (6 + 6)))): 1,
 }
+
+config_dicts = [
+    {'dim_room': (6, 6), 'max_steps': 18, 'num_boxes': 1, 'num_gen_steps': int(1.7*(6+6))},
+    {'dim_room': (7, 7), 'max_steps': 25, 'num_boxes': 1, 'num_gen_steps': int(1.7*(7+7))},
+    {'dim_room': (7, 7), 'max_steps': 28, 'num_boxes': 2, 'num_gen_steps': int(1.9*(7+7))},
+    {'dim_room': (8, 8), 'max_steps': 30, 'num_boxes': 1, 'num_gen_steps': int(1.7*(8+8))},
+    {'dim_room': (8, 8), 'max_steps': 34, 'num_boxes': 2, 'num_gen_steps': int(1.9*(8+8))}
+]
+
 
 # The Master Plan: Map Timesteps -> Schedule
 CURRICULUM_PLAN = {
@@ -81,18 +77,20 @@ CURRICULUM_PLAN = {
 if __name__ == "__main__":
 
     # --- Configuration ---
-    NUM_ENVS = 64
+    NUM_ENVS = 80
     SEED = 123
-    TOTAL_TIMESTEPS = 1_000_000
+    TOTAL_TIMESTEPS = 4_000_000
 
     # 1. Environment Arguments
     env_kwargs = dict(
-        max_retries=12,
-        dim_room=(7, 7),
-        max_steps=25,
-        num_boxes=1,
-        curriculum=True,
-        schedule_dic=STAGE_1,
+        configurations=config_dicts,
+        pool_size=8,
+        min_plays_to_eval=3,
+        max_plays_to_eval=25,
+        gamma=0.2,
+        dim_room=(6, 6),
+        max_steps=18,
+        num_boxes=1
     )
 
     # 2. Wrapper Arguments
@@ -105,7 +103,7 @@ if __name__ == "__main__":
     print(f"Creating {NUM_ENVS} vectorized environments...")
 
     vec_env = make_vec_env(
-        env_id=SokoRetriesCurriculum,
+        env_id=SokoPoolCurriculumEnv,
         n_envs=NUM_ENVS,
         seed=SEED,
         wrapper_class=SokoCanonicalWithAttPadding,
@@ -121,7 +119,7 @@ if __name__ == "__main__":
         policy="MlpPolicy",
         env=vec_env,
         learning_rate=3e-4,
-        n_steps=128,
+        n_steps=256,
         batch_size=1024,
         verbose=1,
         tensorboard_log="./tensorboard/",
@@ -138,20 +136,11 @@ if __name__ == "__main__":
         ),
     )
 
-    # 5. Setup Callbacks
-    curriculum_cb = VectorCurriculumCallback(CURRICULUM_PLAN, verbose=1)
-
-    checkpoint_cb = CheckpointCallback(
-        save_freq=50000,
-        save_path="./models_vec/",
-        name_prefix="soko_att_vec",
-    )
-
     callbacks = CallbackList([curriculum_cb])
 
     # 6. Train
     print("Starting Training...")
-    model.learn(total_timesteps=TOTAL_TIMESTEPS, callback=callbacks)
+    model.learn(total_timesteps=TOTAL_TIMESTEPS)
 
     # 7. Save Final Model
     model.save("final_soko_model_vec")
