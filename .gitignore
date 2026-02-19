@@ -188,3 +188,7 @@ tensorboard_baseline
 
 models_baseline
 models
+models_vec
+
+logs
+

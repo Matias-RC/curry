@@ -3,6 +3,9 @@ import numpy as np
 from gymnasium.spaces import Box
 from gym_sokoban.envs import SokobanEnv
 import random
+import uuid
+from typing import List, Dict, Tuple, Optional
+
 
 class SokobanCompactWrapper(gym.ObservationWrapper):
     def __init__(self, env):
@@ -375,3 +378,145 @@ class SokoRetriesCurriculum(SokobanRetriesWrapper):
     def update_schedule(self, schedule_dic):
         self.schedule_dic = schedule_dic
         self.curriculum = True
+
+
+class SokoPoolCurriculumEnv(SokobanEnv):
+    def __init__(
+        self, 
+        configurations: List[Dict], 
+        pool_size: int = 10, 
+        max_retries_per_level: int = 10, 
+        gamma: float = 0.1,
+        dim_room: Tuple[int, int] = (10, 10),
+        max_steps: int = 120,
+        num_boxes: int = 4,
+        num_gen_steps: Optional[int] = None,
+        render_mode: Optional[str] = None
+    ):
+        # Explicitly initialize the parent with specific variables
+        super().__init__(
+            dim_room=dim_room,
+            max_steps=max_steps,
+            num_boxes=num_boxes,
+            num_gen_steps=num_gen_steps,
+            reset=False,  # We handle our own initial reset/pool generation
+            render_mode=render_mode
+        )
+        
+        # Curriculum Settings
+        self.configurations = configurations
+        self.K = len(configurations)
+        self.pool_size = pool_size
+        self.max_retries = max_retries_per_level
+        self.gamma = gamma
+        
+        # EXP3 State
+        self.weights = np.ones(self.K)
+        self.probs = np.ones(self.K) / self.K
+        
+        # Level Pool: {instance_id: {state_data, plays, config_idx}}
+        self.pool: Dict[str, Dict] = {}
+        self.active_instance_id: Optional[str] = None
+        
+        # Episode Tracking
+        self._last_won = False
+        self._last_done = False
+
+    def _update_exp3_weights(self, config_idx: int, n_plays: int, won: bool):
+        """Calculates the 'Struggle Reward' and updates EXP3 weights."""
+        if not won or n_plays <= 1:
+            reward = 0.0
+        else:
+            # Reward peaks when solved on the very last allowed retry
+            reward = (n_plays - 1) / max(1, (self.max_retries - 1))
+        
+        # EXP3 weight update logic
+        estimated_reward = reward / self.probs[config_idx]
+        self.weights[config_idx] *= np.exp((self.gamma * estimated_reward) / self.K)
+        
+        # Re-normalize probabilities
+        weight_sum = np.sum(self.weights)
+        self.probs = (1.0 - self.gamma) * (self.weights / weight_sum) + (self.gamma / self.K)
+
+    def _refill_pool(self):
+        """Generates new levels using EXP3 probabilities until the pool is full."""
+        while len(self.pool) < self.pool_size:
+            # Sample configuration
+            config_idx = np.random.choice(self.K, p=self.probs)
+            selected_config = self.configurations[config_idx]
+            
+            # Apply config to the generator
+            self.configure(**selected_config)
+            
+            # Use parent's reset to generate a fresh room architecture
+            super().reset() 
+            
+            # Store the state in the pool
+            instance_id = str(uuid.uuid4())
+            self.pool[instance_id] = {
+                'room_fixed': self.room_fixed.copy(),
+                'room_state': self.room_state.copy(),
+                'player_position': self.player_position.copy(),
+                'box_mapping': self.box_mapping.copy() if hasattr(self, 'box_mapping') else None,
+                'config_idx': config_idx,
+                'plays': 0,
+                'dim_room': self.dim_room
+            }
+
+    def reset(self, seed=None, options=None, **kwargs):
+        # 1. Bookkeeping: Did the last level played finish its life cycle?
+        if self.active_instance_id in self.pool and self._last_done:
+            inst = self.pool[self.active_instance_id]
+            inst['plays'] += 1
+            
+            resolved = False
+            if self._last_won:
+                self._update_exp3_weights(inst['config_idx'], inst['plays'], won=True)
+                resolved = True
+            elif inst['plays'] >= self.max_retries:
+                self._update_exp3_weights(inst['config_idx'], inst['plays'], won=False)
+                resolved = True
+                
+            if resolved:
+                del self.pool[self.active_instance_id]
+
+        # 2. Refill pool if levels were resolved
+        self._refill_pool()
+
+        # 3. Sample a level from the pool to break temporal correlation
+        self.active_instance_id = random.choice(list(self.pool.keys()))
+        inst = self.pool[self.active_instance_id]
+
+        # 4. Fast-Restore the environment to the level's start state
+        self.room_fixed = inst['room_fixed'].copy()
+        self.room_state = inst['room_state'].copy()
+        self.player_position = inst['player_position'].copy()
+        if inst['box_mapping'] is not None:
+            self.box_mapping = inst['box_mapping'].copy()
+        self.dim_room = inst['dim_room']
+        
+        # Reset episode counters
+        self.num_env_steps = 0
+        self.reward_last = 0
+        self.boxes_on_target = 0
+        self._last_won = False
+        self._last_done = False
+
+        # 5. Return initial observation
+        obs = self.render(mode='rgb_array')
+        info = {
+            "instance_id": self.active_instance_id, 
+            "retry_number": inst['plays'],
+            "config_idx": inst['config_idx']
+        }
+        return obs, info
+
+    def step(self, action):
+        # Execute standard logic
+        obs, reward, terminated, truncated, info = super().step(action)
+        
+        if terminated or truncated:
+            self._last_done = True
+            self._last_won = info.get("all_boxes_on_target", False)
+            
+        return obs, reward, terminated, truncated, info

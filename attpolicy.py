@@ -139,7 +139,7 @@ class SokoPlayerCentricAtt(BaseFeaturesExtractor):
         ])
         
         # Final Projection (combines Raw + Context)
-        self.final_proj = nn.Linear(hidden_size * 2, features_dim)
+        self.final_proj = nn.Linear(hidden_size , features_dim)
 
     def forward(self, observations: th.Tensor) -> th.Tensor:
             if observations.dim() == 5: 
@@ -179,5 +179,5 @@ class SokoPlayerCentricAtt(BaseFeaturesExtractor):
             attended_player_token = x.gather(1, gather_indices).squeeze(1) 
             
             # 6. Final Readout
-            combined = th.cat([attended_player_token, raw_player_token], dim=1)
-            return self.final_proj(combined)
+            # -combined = th.cat([attended_player_token, raw_player_token], dim=1)
+            return self.final_proj(attended_player_token)
