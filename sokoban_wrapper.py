@@ -388,6 +388,7 @@ class SokoPoolCurriculumEnv(SokobanEnv):
         min_plays_to_eval: int = 5,
         max_plays_to_eval: int = 20,
         gamma: float = 0.1,
+        delta: float = 0.2,
         # Standard Sokoban Defaults
         dim_room: Tuple[int, int] = (10, 10),
         max_steps: int = 120,
@@ -410,6 +411,7 @@ class SokoPoolCurriculumEnv(SokobanEnv):
         self.min_plays = min_plays_to_eval
         self.max_plays = max_plays_to_eval
         self.gamma = gamma
+        self.delta = delta
         
         # EXP3 Weights for CONFIGURATIONS
         self.weights = np.ones(self.K)
@@ -450,12 +452,12 @@ class SokoPoolCurriculumEnv(SokobanEnv):
         # Uncertainty bound shrinks as we play more
         uncertainty = 1.0 / np.sqrt(n)
         
-        # Mastery threshold: Certain win rate is > 80%
-        if (win_rate - uncertainty) > 0.8:
+        # Mastery threshold: Certain win rate is > 1-δ
+        if (win_rate - uncertainty) > 1.0-self.delta:
             return True
             
-        # Impossible threshold: Certain win rate is < 20%
-        if (win_rate + uncertainty) < 0.2:
+        # Impossible threshold: Certain win rate is < δ
+        if (win_rate + uncertainty) < 0.0+self.delta:
             return True
             
         return False
@@ -480,6 +482,8 @@ class SokoPoolCurriculumEnv(SokobanEnv):
 
     def reset(self, seed=None, options=None, second_player=False, render_mode='rgb_array'):
         # 1. Update stats for the instance that just finished an episode
+        past_id = self.active_instance_id
+        forget = False
         if self.active_instance_id in self.pool and self._last_done:
             inst = self.pool[self.active_instance_id]
             inst['plays'] += 1
@@ -488,6 +492,7 @@ class SokoPoolCurriculumEnv(SokobanEnv):
             
             if self._should_discard(inst):
                 self._update_config_weight(inst['config_idx'], inst['plays'])
+                forget = True
                 del self.pool[self.active_instance_id]
 
         # 2. Maintenance
@@ -511,11 +516,13 @@ class SokoPoolCurriculumEnv(SokobanEnv):
         self._last_won = False
         self._last_done = False
 
-        return self.render(mode='rgb_array'), {"plays": inst['plays'], "wins": inst['wins']}
+        return self.render(mode='rgb_array'), {"plays": inst['plays'], "wins": inst['wins'], "instance_id":self.active_instance_id, "past_id":past_id,
+                                               "forget": forget}
 
     def step(self, action):
         obs, reward, terminated, truncated, info = super().step(action)
         if terminated or truncated:
             self._last_done = True
             self._last_won = info.get("all_boxes_on_target", False)
+        info["instance_id"] = self.active_instance_id
         return obs, reward, terminated, truncated, info

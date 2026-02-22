@@ -3,6 +3,7 @@ from stable_baselines3.common.vec_env import VecNormalize
 from stable_baselines3.common.type_aliases import RolloutBufferSamples
 from stable_baselines3.common.buffers import RolloutBuffer
 from gymnasium import spaces
+import torch.nn as nn
 import torch as th
 import numpy as np
 
@@ -257,3 +258,36 @@ class DynamicReplayBuffer:
         self.history[env_idx] = [[],]
         self.current_prefixes[0][env_idx].zero_()
         self.current_prefixes[1][env_idx].zero_()
+
+
+
+class PrefixBuffer(nn.Module):
+    def __init__(self, buffer_size: int, dim: int, n_envs: int, device: str = "cpu"):
+        """
+        k, I have to think.. what should I do? I dont want to store the same data twice
+        I think I should store the prefixes in two separate ways but then how do I vectorize the predictions?
+
+        Whit the trainer I will record the maximum length of any given trayectory,
+        after doing the paralelized training of the actor critic I will have attained target prefixes
+        each target prefix is associated with a previous prefix and a given set of trayectories
+
+        first collect rollouts:
+            -you have generated prefixes based on starting state entirely thus your in out pairs is b - p_0
+        train:
+            -you train over batches this activates the gradient for the prefixes. getting p*.
+            - with p* and the last ever trayectory for each b you make a new in out pair b, x - p_1
+            -Unfortunately we had to keep track of the trayectories two times we keep tensor (n_envs*pool_size, T)
+            -we do two passes one where it is only b_0 and another where the trayectory is taken into account
+        """
+        self.buffer_size = buffer_size
+        self.dim = dim
+        self.n_envs = n_envs
+        
+
+
+    def reset(self):
+         self.prefixes =  th.zeros((self.buffer_size, self.n_envs, self.dim))
+
+
+    def incorporate_parameter(self, vector):
+         pass
