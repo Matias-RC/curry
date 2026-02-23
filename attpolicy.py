@@ -426,6 +426,55 @@ class ExperiencerActorCritic(ActorCriticPolicy):
         values = self.value_net(player_token_vf)
         
         return actions, values, log_prob
+        
+    def evaluate_actions(
+        self, 
+        obs: th.Tensor, 
+        actions: th.Tensor, 
+        prefixes: th.Tensor # Custom argument
+    ) -> Tuple[th.Tensor, th.Tensor, th.Tensor]:
+        """
+        Evaluates actions using the spatial backbone, prefixes, and separate Pi/Vf heads.
+        """
+        B = obs.shape[0]
+
+        # 1. Get spatial tokens from backbone
+        spatial_tokens, spatial_mask, player_indices = self._get_backbone_outputs(obs)
+
+        # 2. Combine [Prefix, Spatial]
+        combined_seq = th.cat([prefixes, spatial_tokens], dim=1)
+        
+        # 3. Mask setup
+        prefix_mask = th.zeros((B, self.num_prefixes), device=obs.device, dtype=th.bool)
+        combined_mask = th.cat([prefix_mask, spatial_mask], dim=1)
+
+        # 4. Actor Pass (Pi)
+        pi_seq = combined_seq
+        for layer in self.pi_attn_layers:
+            pi_seq = layer(pi_seq, padding_mask=combined_mask)
+
+        # 5. Critic Pass (Vf)
+        vf_seq = combined_seq
+        for layer in self.vf_attn_layers:
+            vf_seq = layer(vf_seq, padding_mask=combined_mask)
+
+        # 6. Gather attended player tokens
+        gather_indices = player_indices.view(B, 1, 1).expand(-1, -1, self.hidden_size)
+        
+        # Slice out the spatial part (skipping prefixes) to find the player
+        pi_attended_spatial = pi_seq[:, self.num_prefixes:, :]
+        player_token_pi = pi_attended_spatial.gather(1, gather_indices).squeeze(1)
+
+        vf_attended_spatial = vf_seq[:, self.num_prefixes:, :]
+        player_token_vf = vf_attended_spatial.gather(1, gather_indices).squeeze(1)
+
+        # 7. Distribution and Values
+        distribution = self._get_action_dist_from_latent(player_token_pi)
+        log_prob = distribution.log_prob(actions)
+        entropy = distribution.entropy()
+        values = self.value_net(player_token_vf)
+
+        return values, log_prob, entropy
 
     def upgrade_prefix_with_trajectory(self, prev_prefix, trajectory_of_obs, trajectory_mask):
             """
