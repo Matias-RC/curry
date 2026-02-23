@@ -260,34 +260,172 @@ class DynamicReplayBuffer:
         self.current_prefixes[1][env_idx].zero_()
 
 
+import numpy as np
+import torch
+import torch.nn as nn
+from typing import Optional, Generator, Union, List, Tuple, Dict
+from stable_baselines3.common.buffers import RolloutBuffer
+from stable_baselines3.common.type_aliases import RolloutBufferSamples
+from gymnasium import spaces
 
-class PrefixBuffer(nn.Module):
-    def __init__(self, buffer_size: int, dim: int, n_envs: int, device: str = "cpu"):
-        """
-        k, I have to think.. what should I do? I dont want to store the same data twice
-        I think I should store the prefixes in two separate ways but then how do I vectorize the predictions?
-
-        Whit the trainer I will record the maximum length of any given trayectory,
-        after doing the paralelized training of the actor critic I will have attained target prefixes
-        each target prefix is associated with a previous prefix and a given set of trayectories
-
-        first collect rollouts:
-            -you have generated prefixes based on starting state entirely thus your in out pairs is b - p_0
-        train:
-            -you train over batches this activates the gradient for the prefixes. getting p*.
-            - with p* and the last ever trayectory for each b you make a new in out pair b, x - p_1
-            -Unfortunately we had to keep track of the trayectories two times we keep tensor (n_envs*pool_size, T)
-            -we do two passes one where it is only b_0 and another where the trayectory is taken into account
-        """
-        self.buffer_size = buffer_size
-        self.dim = dim
-        self.n_envs = n_envs
+class PrefixRolloutBuffer(RolloutBuffer, nn.Module):
+    def __init__(
+        self,
+        buffer_size: int,
+        observation_space: spaces.Space,
+        action_space: spaces.Space,
+        device: Union[torch.device, str] = "auto",
+        gae_lambda: float = 1,
+        gamma: float = 0.99,
+        n_envs: int = 1,
+    ):
+        # 1. Initialize PyTorch Module to register ParameterDict
+        nn.Module.__init__(self)
         
+        # 2. Initialize SB3 Base Buffer
+        RolloutBuffer.__init__(
+            self, 
+            buffer_size, 
+            observation_space, 
+            action_space, 
+            device, 
+            gae_lambda=gae_lambda, 
+            gamma=gamma, 
+            n_envs=n_envs
+        )
+        
+        # --- Custom Architectural State Variables ---
+        self.prefixes = nn.ParameterDict()
+        self.trajectories: List[Tuple[str, List[np.ndarray]]] = []
+        self.max_trajectory_size: int = 0
+        self.current_prefix = [None for _ in range(self.n_envs)]
+        
+        # Parallel array to track instance_ids alongside standard SB3 variables
+        self.instance_ids = np.empty((self.buffer_size, self.n_envs), dtype=object)
 
+    def reset(self) -> None:
+        """Overrides reset to clear custom trajectory tracking."""
+        super().reset()
+        self.instance_ids = np.empty((self.buffer_size, self.n_envs), dtype=object)
+        self.trajectories = []
+        self.max_trajectory_size = 0
 
-    def reset(self):
-         self.prefixes =  th.zeros((self.buffer_size, self.n_envs, self.dim))
+    def add(
+        self,
+        obs: np.ndarray,
+        action: np.ndarray,
+        reward: np.ndarray,
+        episode_start: np.ndarray,
+        value: torch.Tensor,
+        log_prob: torch.Tensor,
+        instance_ids: Optional[List[str]] = None
+    ) -> None:
+        """Overrides standard add to inject instance_id tracking."""
+        # Capture buffer position before super().add() increments it
+        idx = self.pos 
+        
+        super().add(obs, action, reward, episode_start, value, log_prob)
+        
+        # Track the environment IDs for this specific step
+        if instance_ids is not None:
+            self.instance_ids[idx] = np.array(instance_ids)
 
+    def add_to_prefix_tensor(self, instance_id: str, candidate: Optional[torch.Tensor] = None) -> None:
+        """Registers a new prefix memory vector for a previously unseen level."""
+        if instance_id not in self.prefixes:
+            if candidate is None:
+                raise ValueError("A candidate tensor must be provided for new prefixes.")
+            
+            # .clone().detach() ensures it acts as a leaf node, preventing graph history bleed.
+            param = nn.Parameter(candidate.clone().detach().to(self.device).requires_grad_(True))
+            self.prefixes[instance_id] = param
 
-    def incorporate_parameter(self, vector):
-         pass
+    def flush_dict(self, ids_to_be_flushed: List[str], prefix_optimizer: torch.optim.Optimizer) -> None:
+        """
+        Safely destroys memory vectors for forgotten levels and repairs the optimizer.
+        """
+        for inst_id in ids_to_be_flushed:
+            if inst_id in self.prefixes:
+                del self.prefixes[inst_id]
+                
+        # Rebuild optimizer param groups. This prevents PyTorch from crashing 
+        # when trying to backpropagate into a deleted memory address.
+        if len(prefix_optimizer.param_groups) > 0:
+            prefix_optimizer.param_groups[0]['params'] = list(self.prefixes.values())
+
+    def get(self, batch_size: Optional[int] = None) -> Generator[RolloutBufferSamples, None, None]:
+        """Phase 1: Standard PPO Yield."""
+        if not self.generator_ready:
+            # SB3 will flatten standard tensors via super().get(). 
+            # We must manually flatten our parallel ID array so it stays in sync.
+            self.instance_ids = self.swap_and_flatten(self.instance_ids)
+            
+        yield from super().get(batch_size)
+
+    def get_trajectories(self, batch_size: int) -> Generator[Tuple[List[str], torch.Tensor], None, None]:
+        """
+        Phase 2: Meta-Training Yield. 
+        Groups contiguous rollout chunks by episode_starts, pads them, and yields batches.
+        """
+        assert self.full, "Buffer must be full to extract complete trajectories."
+        
+        # Ensure arrays are flattened (in case Phase 1 wasn't run)
+        if not self.generator_ready:
+            self.instance_ids = self.swap_and_flatten(self.instance_ids)
+            _tensor_names = ["observations", "actions", "values", "log_probs", "advantages", "returns", "episode_starts"]
+            for tensor in _tensor_names:
+                self.__dict__[tensor] = self.swap_and_flatten(self.__dict__[tensor])
+            self.generator_ready = True
+
+        # 1. Parse flattened buffer into discrete trajectories via episode_starts
+        flat_obs = self.observations
+        flat_starts = self.episode_starts
+        flat_ids = self.instance_ids
+        
+        self.trajectories = [] # Reset for this extraction
+        self.max_trajectory_size = 0
+        
+        current_traj = []
+        current_id = None
+        
+        for i in range(len(flat_obs)):
+            # If an episode starts and we have existing data, seal the previous trajectory
+            if flat_starts[i] == 1.0 and len(current_traj) > 0:
+                self.trajectories.append((current_id, current_traj))
+                self.max_trajectory_size = max(self.max_trajectory_size, len(current_traj))
+                current_traj = []
+                
+            current_id = flat_ids[i]
+            current_traj.append(flat_obs[i])
+            
+        # Seal the final trajectory at the end of the buffer
+        if len(current_traj) > 0:
+            self.trajectories.append((current_id, current_traj))
+            self.max_trajectory_size = max(self.max_trajectory_size, len(current_traj))
+
+        # 2. Shuffle and Yield Padded Batches
+        indices = np.random.permutation(len(self.trajectories))
+        
+        for start_idx in range(0, len(indices), batch_size):
+            batch_inds = indices[start_idx : start_idx + batch_size]
+            
+            batch_ids = []
+            batch_tensors = []
+            
+            for idx in batch_inds:
+                inst_id, traj_steps = self.trajectories[idx]
+                batch_ids.append(inst_id)
+                
+                # Convert list of observation arrays to a PyTorch Tensor
+                traj_tensor = torch.as_tensor(np.array(traj_steps), dtype=torch.float32, device=self.device)
+                
+                # Apply Zero-Padding if trajectory is shorter than max length
+                pad_len = self.max_trajectory_size - len(traj_steps)
+                if pad_len > 0:
+                    padding = torch.zeros((pad_len, *self.obs_shape), dtype=torch.float32, device=self.device)
+                    traj_tensor = torch.cat([traj_tensor, padding], dim=0)
+                    
+                batch_tensors.append(traj_tensor)
+                
+            # Yields: (List of Instance IDs length Batch), (Tensor shape: Batch x Max_Traj_Len x *obs_shape)
+            yield batch_ids, torch.stack(batch_tensors)
