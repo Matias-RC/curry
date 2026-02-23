@@ -151,3 +151,22 @@ class OptimizedMaple(PPO):
                 assert self.clip_range_vf > 0, "`clip_range_vf` must be positive, pass `None` to deactivate vf clipping"
 
             self.clip_range_vf = FloatSchedule(self.clip_range_vf)
+        
+    def collect_rollouts(
+        self,
+        env: VecEnv,
+        callback: BaseCallback,
+        rollout_buffer: RolloutBuffer,
+        n_rollout_steps: int,
+    ) -> bool:
+        assert self._last_obs is not None
+
+        self.policy.set_training_mode(False)
+        n_steps = 0
+        self.rollout_buffer.reset()
+        while n_steps  < n_rollout_steps:
+            with th.no_grad():
+                obs_tensor = obs_as_tensor(self._last_obs, self.device)
+                actions, values, log_probs = self.policy(obs_tensor)
+
+
