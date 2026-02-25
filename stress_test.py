@@ -1,77 +1,79 @@
 import torch
 import torch.nn as nn
 import gc
+import time
+import sys
 
-class StressTestedModule(nn.Module):
+class StatelessDynamicModule(nn.Module):
     def __init__(self, size):
         super().__init__()
         self.size = size
         self.param = nn.Parameter(torch.empty((0, size)))
 
     def incorporate(self, vector):
-        # 1. Flatten and Validate
+        # Detach and clone to ensure no graph history is preserved
         vector = vector.detach().view(1, self.size)
-        
-        # 2. Concatenate and Clone to break memory links
-        if self.param.shape[0] == 0:
+        if self.param.numel() == 0:
             new_data = vector.clone()
         else:
+            # Re-concatenating into a new memory block
             new_data = torch.cat([self.param.data, vector], dim=0).clone()
-        
-        # 3. Replace Parameter (Old one is now eligible for GC)
         self.param = nn.Parameter(new_data)
 
     def erase(self, index):
         if self.param.shape[0] == 0: return
-        
-        # 1. Create a mask to filter out the index
-        indices = torch.arange(self.param.shape[0])
-        mask = indices != index
-        
-        # 2. Slice and Clone to ensure we don't keep a 'view' of the old tensor
-        new_data = self.param.data[mask].clone()
-        
-        # 3. Reassign
+        indices = torch.arange(self.param.shape[0], device=self.param.device)
+        # Clone ensures we don't keep a 'view' of the larger original tensor
+        new_data = self.param.data[indices != index].clone()
         self.param = nn.Parameter(new_data)
 
-    def forward(self):
-        return self.param
-
-def run_memory_test(iterations=2000, vector_size=512):
-    model = StressTestedModule(vector_size)
-    print(f"Starting Stress Test: {iterations} cycles of Add/Backprop/Erase")
+def run_stress_test(vector_size=2048, iterations=10000):
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = StatelessDynamicModule(vector_size).to(device)
     
-    for i in range(iterations):
-        # Step A: Add a parameter
-        model.incorporate(torch.randn(vector_size))
-        
-        # Step B: Simulate Training (This creates gradients and optimizer state)
-        # We use Adam because it has heavy memory buffers (2x param size)
-        optimizer = torch.optim.Adam([model.param], lr=1e-3)
-        target = torch.randn_like(model.param)
+    print(f"--- HARDWARE CHECK ---", flush=True)
+    print(f"Device: {torch.cuda.get_device_name(0) if device.type == 'cuda' else 'CPU'}", flush=True)
+    print(f"Vector Size: {vector_size} | Total Iterations: {iterations}", flush=True)
+    
+    start_time = time.time()
+
+    for i in range(1, iterations + 1):
+        # 1. Expand/Contract Logic (Cycle between 1 and 20 rows)
+        if model.param.shape[0] < 20:
+            model.incorporate(torch.randn(vector_size, device=device))
+        else:
+            # Erase the middle element to force memory shifting
+            model.erase(10)
+
+        # 2. Optimization
+        opt = torch.optim.SGD([model.param], lr=0.01)
+        target = torch.ones_like(model.param)
         loss = torch.nn.functional.mse_loss(model.param, target)
         loss.backward()
-        optimizer.step()
+        opt.step()
         
-        # Step C: Erase a parameter (The oldest one)
-        model.erase(0)
+        # 3. Memory Cleanup
+        opt.zero_grad(set_to_none=True)
+        del opt
         
-        # Step D: Cleanup
-        # If we don't delete the optimizer, it keeps a reference to the 
-        # specific 'model.param' object we just replaced!
-        optimizer.zero_grad(set_to_none=True)
-        del optimizer
-        
-        if i % 500 == 0:
-            # Clear Python GC and Torch Cache for accurate reading
-            gc.collect()
-            if torch.cuda.is_available():
+        # 4. Periodic Logging (Every 1000 steps)
+        if i % 1000 == 0 or i == 1:
+            elapsed = time.time() - start_time
+            if device.type == "cuda":
+                # Check reserved vs allocated memory
+                res = torch.cuda.memory_reserved() / 1e6
+                alc = torch.cuda.memory_allocated() / 1e6
+                print(f"Step: {i:5d} | Rows: {model.param.shape[0]:2d} | Res: {res:7.2f}MB | Alc: {alc:7.2f}MB | Time: {elapsed:.1f}s", flush=True)
                 torch.cuda.empty_cache()
-                mem = torch.cuda.memory_reserved() / 1e6
-                print(f"Iteration {i} | Reserved Memory: {mem:.2f}MB")
             else:
-                print(f"Iteration {i} complete (CPU).")
+                print(f"Step: {i:5d} | Rows: {model.param.shape[0]:2d} | Time: {elapsed:.1f}s", flush=True)
+            
+            gc.collect()
 
-    print("Test complete. If memory didn't explode, the 'erase' logic is sound.")
+    print(f"--- TEST COMPLETE --- Total Time: {time.time() - start_time:.2f}s", flush=True)
 
-run_memory_test()
+if __name__ == "__main__":
+    try:
+        run_stress_test()
+    except Exception as e:
+        print(f"FATAL ERROR: {e}", file=sys.stderr, flush=True)
