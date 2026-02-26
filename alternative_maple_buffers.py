@@ -1,11 +1,15 @@
-from typing import Optional, Union, Tuple, NamedTuple, Generator
+from typing import Optional, Union, Tuple, NamedTuple, Generator, Type, Set
 from stable_baselines3.common.vec_env import VecNormalize
 from stable_baselines3.common.type_aliases import RolloutBufferSamples
-from stable_baselines3.common.buffers import RolloutBuffer
+from stable_baselines3.common.buffers import RolloutBuffer, BaseBuffer
+from stable_baselines3.common.type_aliases import GymEnv, Schedule, MaybeCallback, Any
+from stable_baselines3.common.preprocessing import get_action_dim, get_obs_shape
+from stable_baselines3.common.utils import get_device
 from gymnasium import spaces
 import torch.nn as nn
 import torch as th
 import numpy as np
+import warnings
 
 class MapleRolloutBufferSamples(NamedTuple):
     observations: th.Tensor
@@ -461,3 +465,265 @@ class PrefixRolloutBuffer(RolloutBuffer, nn.Module):
                 th.stack(orig_list), 
                 th.stack(opt_list)
             )
+
+class PRBSamples(NamedTuple):
+    observations: th.Tensor
+    actions: th.Tensor
+    old_values: th.Tensor
+    old_log_prob: th.Tensor
+    advantages: th.Tensor
+    returns: th.Tensor
+    indices: th.Tensor
+
+class PRBSupervisionSamples(NamedTuple):
+    inputs: th.Tensor  # (B, T, *Obs_Shape)
+    masks: th.Tensor   # (B, T) - Padding mask for the temporal transformer
+    targets: th.Tensor # (B, *Prefix_Shape) - The "ground truth" prefix reached
+
+
+class PrefixRolloutBuffer(RolloutBuffer):
+    """
+    Rollout buffer used in EPPO algorithm. 
+    Experiences are discarded after policy update.
+    Prefixes are kept if not explicitly shown to "forget" method.
+    """
+
+    observations: np.ndarray
+    actions: np.ndarray
+    rewards: np.ndarray
+    advatages: np.ndarray
+    returns: np.ndarray
+    episode_starts: np.ndarray
+    log_probs: np.ndarray
+    values: np.ndarray
+    prefix_register: Dict[str, int]
+    forget_registry: Set[str]
+
+    def __init__(
+            self,
+            buffer_size: int,
+            observation_space: spaces.Space,
+            action_space: spaces.Space,
+            prefix_shape: Tuple[int, int],
+            prefix_lr: int,
+            prefix_optimizer: Type[nn.Module] = th.optim.SGD,
+            device: Union[th.device, str] = "auto",
+            gae_lambda: float = 1,
+            gamma: float = 0.99,
+            n_envs: int = 1,
+    ):
+        if prefix_optimizer != th.optim.SGD:
+            # Warn the user
+            warnings.warn("Using optimizers other than SGD may lead to unexpected behavior.\
+                           Ensure that optimizer state is properly managed across iterations.\
+                           And coinsider sticking to optimizers without adaptive states like\
+                           momentum or Adam.")
+            
+        self.prefix_shape = prefix_shape
+        self.prefixes = th.empty((0, *self.prefix_shape))
+        self.optimizer_class = prefix_optimizer
+
+        self.prefix_register = {}
+        self.forget_registry = set()
+        super().__init__(
+            buffer_size,
+            observation_space,
+            action_space,
+            device,
+            gae_lambda,
+            gamma,
+            n_envs
+        )
+
+
+    def incorporate(self, vector):
+        # Detach and clone to ensure no graph history is preserved
+        vector = vector.detach().view(1, *self.prefix_shape)
+        if self.prefixes.shape[0] == 0:
+            self.prefixes = vector.clone()
+        else:
+            self.prefixes = th.cat([self.prefixes.data, vector], dim=0)
+
+    def erase(self, index):
+        if self.prefixes.shape[0] == 0: return
+        indices = th.arange(self.prefixes.shape[0], device=self.prefixes.device)
+        self.prefixes = self.prefixes.data[indices != index].clone()
+
+    def reset(self) -> None:
+        super().reset()
+        self.indices = np.zeros((self.buffer_size, self.envs), dtype=np.int64)
+
+    def set_prefix(self, prefix, _id):
+        self.incorporate(prefix)
+        idx = self.prefixes.shape[0]-1
+        self.prefix_register[_id] = idx
+
+    def get_prefix(self, _id):
+        # Go from id of level to idx in tensor.
+        idx = self.prefix_register.get(_id)
+        if idx is None:
+            return None
+        return self.prefixes[idx]
+        
+    def set_forget(self, _id):
+        self.forget_registry.add(_id)
+    
+    def prepare_prefix_optimizer(self, learning_rate):
+        self.prefixes = nn.Parameter(self.prefixes)
+        optimizer = self.optimizer_class([self.prefixes], lr=learning_rate)
+        return optimizer
+    def get(self, batch_size: Optional[int] = None) -> Generator[PRBSamples, None, None]:
+        assert self.full, ""
+        indices = np.random.permutation(self.buffer_size * self.n_envs)
+
+        # Return everything, don't create minibatches
+        if batch_size is None:
+            batch_size = self.buffer_size * self.n_envs
+        start_idx = 0
+        try:
+            while start_idx < self.buffer_size * self.n_envs:
+                yield self._get_samples(indices[start_idx : start_idx + batch_size])
+                start_idx += batch_size
+        finally:
+            self.prefixes = self.prefixes.detach().clone()
+
+        
+    def _get_samples(
+        self,
+        batch_inds: np.ndarray,
+    ) -> PRBSamples:
+        data = (
+            self.observations[batch_inds],
+            self.actions[batch_inds],
+            self.values[batch_inds].flatten(),
+            self.log_probs[batch_inds].flatten(),
+            self.advantages[batch_inds].flatten(),
+            self.returns[batch_inds].flatten(),
+            self.indices[batch_inds].flatten()
+        )
+        return PRBSamples(*tuple(map(self.to_torch, data)))
+
+    def generate_supervition_buffer(self):
+        """
+        Unlike get() which can be affordable.
+        This method has to itrate through the buffer before even yielding.
+        This is why we load in ram the batched form of trajectories before training.
+        This way it is only called once per training iteration, not once per epoch.
+        Has to be called before get() such that trajectories are in original order.
+        """
+        _tensor_names = [
+            "observations",
+            "actions",
+            "values",
+            "log_probs",
+            "advantages",
+            "returns",
+            "episode_starts",
+            "indices"
+        ]
+        for tensor in _tensor_names:
+            self.__dict__[tensor] = self.swap_and_flatten(self.__dict__[tensor])
+
+        trajectories = []
+        trajectory = []
+        max_traj_len = 0
+        current_traj_len = 0
+        # Iterate
+        for idx in range(self.n_envs*self.buffer_size):
+            current_traj_len += 1
+            trajectory.append({
+                "obs": self.observations[idx],
+                "index": self.indices[idx]
+            })
+            if self.episode_starts[idx] == 1.0:
+                trajectories.append(trajectory)
+                trajectory = []
+                max_traj_len = max(max_traj_len, current_traj_len)
+                current_traj_len = 0
+        # Ensure that each trayectory is padded with valid observations and make masks
+        masks = []
+        for item in trajectories:
+            #repeat the last item until max len is reached
+            mask_len = 0
+            while len(item) < max_traj_len:
+                item.append(item[-1])
+                mask_len += 1
+            masks.append([False]*(max_traj_len-mask_len) + [True]*mask_len)
+
+        #make tensors
+        inputs = []
+        masks = []
+        targets = []
+        for item, mask in zip(trajectories, masks):
+            inputs.append(th.stack([i["obs"] for i in item]))
+            masks.append(th.tensor(mask))
+            targets.append(self.prefixes[item[0]["index"]])
+        return PRBSupervisionSamples(
+            inputs=th.stack(inputs),
+            masks=th.stack(masks),
+            targets=th.stack(targets)
+        )
+
+
+    def get_trajectory_batches(self, batch_size: int, supervision_samples: PRBSupervisionSamples) -> Generator[Tuple[th.Tensor, th.Tensor, th.Tensor], None, None]:
+        """Yields (traj_obs, traj_mask, orig_prefixes)."""
+        indices = np.random.permutation(len(supervision_samples.inputs))
+        
+        for start_idx in range(0, len(indices), batch_size):
+            batch_inds = indices[start_idx : start_idx + batch_size]
+            
+            yield (
+                supervision_samples.inputs[batch_inds], 
+                supervision_samples.masks[batch_inds], 
+                supervision_samples.targets[batch_inds]
+            )
+    
+    def add(
+        self,
+        obs: np.ndarray,
+        action: np.ndarray,
+        reward: np.ndarray,
+        episode_start: np.ndarray,
+        value: th.Tensor,
+        log_prob: th.Tensor,
+        instance_ids: List[str]
+    ) -> None:
+        super().add(
+            obs,
+            action,
+            reward,
+            episode_start,
+            value,
+            log_prob
+        )
+        index = []
+        for _id in instance_ids:
+            index.append(self.prefix_register[_id])
+        self.indices[self.pos] = np.array(index)
+
+
+
+    def clean(self):
+        """
+        This method removes prefixes that won't be used anymore.
+        """
+        forget_indices = sorted(
+            [self.prefix_register[_id] for _id in self.forget_registry if _id in self.prefix_register],
+            reverse=True
+        )
+
+        for idx in forget_indices:
+            self.erase(idx)
+
+        temporary_register = [
+            (_id, idx) for _id, idx in self.prefix_register.items() if _id not in self.forget_registry
+        ]
+
+        current_idx = 0
+        for _id, idx in temporary_register:
+            delta = sum(1 for fidx in forget_indices if fidx < idx)
+            new_idx = idx - delta
+            self.prefix_register[_id] = new_idx
+            current_idx += 1
+        
+        self.forget_registry.clear()

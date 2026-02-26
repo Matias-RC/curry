@@ -7,15 +7,18 @@ import torch as th
 import torch.nn as nn
 import numpy as np
 from gymnasium import spaces
-from typing import Tuple, Dict, Any, Optional, Union, Type
+from typing import Any, Dict, List, Optional, Tuple, Type, Union
 from stable_baselines3.common.policies import ActorCriticPolicy
 from stable_baselines3.common.distributions import (
-    make_proba_distribution, 
-    CategoricalDistribution, 
-    DiagGaussianDistribution,
     BernoulliDistribution,
-    MultiCategoricalDistribution
+    CategoricalDistribution,
+    DiagGaussianDistribution,
+    Distribution,
+    MultiCategoricalDistribution,
+    StateDependentNoiseDistribution,
+    make_proba_distribution,
 )
+from stable_baselines3.common.type_aliases import PyTorchObs, Schedule
 
 class RotaryEmbedding2D(nn.Module):
     def __init__(self, dim, max_h, max_w, base=10000):
@@ -180,17 +183,18 @@ class PrefixMaskedAttentionLayer(nn.Module):
         q, k, v = qkv[0], qkv[1], qkv[2]
         
         # --- ISOLATE ROPE ---
-        # Split Q and K into [Prefixes, Spatial]
-        q_prefix, q_spatial = q[:, :, :self.num_prefixes, :], q[:, :, self.num_prefixes:, :]
-        k_prefix, k_spatial = k[:, :, :self.num_prefixes, :], k[:, :, self.num_prefixes:, :]
+        # Split Q and K into [Spatial Tokens | Prefix Tokens]
+
+        q_spatial, q_prefix = q[:, :, :-self.num_prefixes, :], q[:, :, -self.num_prefixes:, :]
+        k_spatial, k_prefix = k[:, :, :-self.num_prefixes, :], k[:, :, -self.num_prefixes:, :]
         
         # Apply RoPE ONLY to the spatial tokens
         q_spatial = self.rope.apply_rope(q_spatial)
         k_spatial = self.rope.apply_rope(k_spatial)
         
         # Recombine
-        q = th.cat([q_prefix, q_spatial], dim=2)
-        k = th.cat([k_prefix, k_spatial], dim=2)
+        q = th.cat((q_spatial, q_prefix), dim=2)
+        k = th.cat((k_spatial, k_prefix), dim=2) 
         
         # Standard Attention
         attn = (q @ k.transpose(-2, -1)) * self.scale
@@ -241,364 +245,399 @@ class SokoPlayerCentricAtt(BaseFeaturesExtractor):
         self.final_proj = nn.Linear(hidden_size , features_dim)
 
     def forward(self, observations: th.Tensor) -> th.Tensor:
-            if observations.dim() == 5: 
-                observations = observations.unsqueeze(0)
-                
-            B = observations.shape[0]
+        if observations.dim() == 5: 
+            observations = observations.unsqueeze(0)
             
-            # 1. Padding Mask Generation
-            is_padding = (observations[:, :, :, 0, 0, 0] == -1) 
-            padding_mask = is_padding.reshape(B, -1) 
-            
-            # 2. Input Cleaning & Projection
-            clean_obs = observations.clone()
-            clean_obs[clean_obs == -1] = 0
-            
-            # FIX: .reshape() handles non-contiguous memory from VecEnvs
-            obs_flat = clean_obs.reshape(B, self.H_grid, self.W_grid, -1)
-            
-            embeddings = self.mlp_extractor(obs_flat)
-            x = embeddings.reshape(B, self.seq_len, self.hidden_size)
-            
-            # 3. Player Localization
-            player_map = observations[..., 3, :, :].sum(dim=(-1, -2)) 
-            player_map_flat = player_map.reshape(B, -1)
-            player_indices = player_map_flat.argmax(dim=1) 
-            
-            gather_indices = player_indices.view(B, 1, 1).expand(-1, -1, self.hidden_size)
-            raw_player_token = x.gather(1, gather_indices).squeeze(1) 
-            
-            # 4. Masked Transformer Stack
-            self.rope.update_cache(x.device, x.dtype)
-            
-            for block in self.blocks:
-                x = block(x, padding_mask=padding_mask)
-                
-            # 5. Extract Contextualized Player Token
-            attended_player_token = x.gather(1, gather_indices).squeeze(1) 
-            
-            # 6. Final Readout
-            # -combined = th.cat([attended_player_token, raw_player_token], dim=1)
-            return self.final_proj(attended_player_token)
-
-class TemporalAttentionLayer(nn.Module):
-    def __init__(self, hidden_size, num_heads, rope_1d_module):
-        super().__init__()
-        self.layer = PrefixMaskedAttentionLayer(
-            hidden_size, num_heads, rope_1d_module, num_prefixes=0 # 1D RoPE applies to whole sequence 
-        )
+        B = observations.shape[0]
         
-    def forward(self, x, padding_mask=None):
-        return self.layer(x, padding_mask)
-
-# --- Main Policy Class ---
-
-class ExperiencerActorCritic(ActorCriticPolicy):
-    def __init__(
-        self,
-        observation_space: spaces.Space,
-        action_space: spaces.Space,
-        lr_schedule,
-        hidden_size: int = 128,
-        num_prefixes: int = 4,
-        num_heads: int = 4,
-        attn_layers: int = 2,
-        *args,
-        **kwargs
-    ):
-        self.hidden_size = hidden_size
-        self.num_prefixes = num_prefixes
-        self.num_heads = num_heads
-        
-        super().__init__(
-            observation_space, 
-            action_space, 
-            lr_schedule,
-            features_extractor_class=SokoPlayerCentricAtt,
-            features_extractor_kwargs=dict(
-                hidden_size=hidden_size, 
-                num_heads=num_heads,
-                features_dim=hidden_size
-            ),
-            *args, 
-            **kwargs
-        )
-
-        # 2. Initial Prefix Generator
-        self.prefix_init_net = nn.Linear(self.features_dim, num_prefixes * hidden_size)
-
-        # 3. Standard Forward Pass Modules (Separated Pi and Vf)
-        self.pi_attn_layers = nn.ModuleList([
-            PrefixMaskedAttentionLayer(hidden_size, num_heads, self.features_extractor.rope, num_prefixes)
-            for _ in range(attn_layers)
-        ])
-        
-        self.vf_attn_layers = nn.ModuleList([
-            PrefixMaskedAttentionLayer(hidden_size, num_heads, self.features_extractor.rope, num_prefixes)
-            for _ in range(attn_layers)
-        ])
-
-        # 4. The Thinker Modules (Used exclusively in upgrade_prefix_with_trajectory)
-        self.thinker_spatial= nn.ModuleList([
-            PrefixMaskedAttentionLayer(hidden_size, num_heads, self.features_extractor.rope, num_prefixes)
-            for _ in range(attn_layers)
-        ])
-        
-        self.rope1d = RotaryEmbedding1D(hidden_size // num_heads)
-        self.thinker_temporal = TemporalAttentionLayer(hidden_size, num_heads, self.rope1d)
-
-    def _build_mlp_extractor(self) -> None:
-        """Override to prevent standard SB3 MLP construction. We route manually."""
-        self.mlp_extractor = nn.Module()
-        self.mlp_extractor.latent_dim_pi = self.hidden_size
-        self.mlp_extractor.latent_dim_vf = self.hidden_size
-
-    def make_initial_prefix(self, obs: th.Tensor) -> th.Tensor:
-        """Step 2: Generate initial prefixes from isolated $x_{(i,j)}$."""
-        # backbone isolates the player token natively
-        player_centric_features = self.features_extractor(obs) 
-        prefixes_flat = self.prefix_init_net(player_centric_features)
-        return prefixes_flat.view(-1, self.num_prefixes, self.hidden_size)
-
-    def _get_backbone_outputs(self, obs: th.Tensor):
-        """Helper to run the backbone and isolate spatial tokens + player coords."""
-        B = obs.shape[0]
-        
-        # Generate Padding Mask
-        is_padding = (obs[:, :, :, 0, 0, 0] == -1) 
+        # 1. Padding Mask Generation
+        is_padding = (observations[:, :, :, 0, 0, 0] == -1) 
         padding_mask = is_padding.reshape(B, -1) 
         
-        # Clean and embed
-        clean_obs = obs.clone()
+        # 2. Input Cleaning & Projection
+        clean_obs = observations.clone()
         clean_obs[clean_obs == -1] = 0
-        obs_flat = clean_obs.reshape(B, self.features_extractor.H_grid, self.features_extractor.W_grid, -1)
-        embeddings = self.features_extractor.mlp_extractor(obs_flat)
-        x = embeddings.reshape(B, self.features_extractor.seq_len, self.hidden_size)
         
-        # Backbone Transformer Blocks (Full Attention over grid)
-        self.features_extractor.rope.update_cache(x.device, x.dtype)
-        for block in self.features_extractor.blocks:
+        # FIX: .reshape() handles non-contiguous memory from VecEnvs
+        obs_flat = clean_obs.reshape(B, self.H_grid, self.W_grid, -1)
+        
+        embeddings = self.mlp_extractor(obs_flat)
+        x = embeddings.reshape(B, self.seq_len, self.hidden_size)
+        
+        # 3. Player Localization
+        player_map = observations[..., 3, :, :].sum(dim=(-1, -2)) 
+        player_map_flat = player_map.reshape(B, -1)
+        player_indices = player_map_flat.argmax(dim=1) 
+        
+        gather_indices = player_indices.view(B, 1, 1).expand(-1, -1, self.hidden_size)
+        
+        # 4. Masked Transformer Stack
+        self.rope.update_cache(x.device, x.dtype)
+        
+        for block in self.blocks:
             x = block(x, padding_mask=padding_mask)
             
-        # Player Localization
-        player_map = obs[..., 3, :, :].sum(dim=(-1, -2)).reshape(B, -1)
-        player_indices = player_map.argmax(dim=1)
+        # 5. Extract Contextualized Player Token
+        attended_player_token = x.gather(1, gather_indices).squeeze(1) 
         
-        return x, padding_mask, player_indices
+        # 6. Final Readout
+        # -combined = th.cat([attended_player_token, raw_player_token], dim=1)
+        return self.final_proj(attended_player_token)
 
-    def forward(self, obs: th.Tensor, prefix: th.Tensor, deterministic: bool = False):
-        """Step 3: Standard Forward Pass using separated Pi and Vf attention layers."""
-        B = obs.shape[0]
+class SokoAtt(BaseFeaturesExtractor):
+    def __init__(self, observation_space: spaces.Box, features_dim: int = 256, 
+                 hidden_size: int = 128, num_heads: int = 4, layers: int = 3):
         
-        # Get raw spatial tokens from backbone
-        spatial_tokens, spatial_mask, player_indices = self._get_backbone_outputs(obs)
+        # The wrapper returns: (Hw, Ww, C, ws, ws)
+        # SB3 inputs: (B, Hw, Ww, C, ws, ws)
         
-        # Combine [Prefix, Spatial]
-        combined_seq = th.cat([prefix, spatial_tokens], dim=1)
+        super().__init__(observation_space, features_dim)
         
-        # Mask setup: Prefixes are never masked
-        prefix_mask = th.zeros((B, self.num_prefixes), device=obs.device, dtype=th.bool)
-        combined_mask = th.cat([prefix_mask, spatial_mask], dim=1)
+        self.H_grid, self.W_grid, self.C, self.wx, self.wy = observation_space.shape
+        self.hidden_size = hidden_size
+        self.seq_len = self.H_grid * self.W_grid
         
-        # --- Actor Pass (Pi) ---
-        pi_seq = combined_seq
-        for layer in self.pi_attn_layers:
-            pi_seq = layer(pi_seq, padding_mask=combined_mask)
+        # Input Projection
+        input_dim = self.C * self.wx * self.wy
+        self.mlp_extractor = nn.Sequential(
+            nn.Linear(input_dim, hidden_size),
+            nn.LayerNorm(hidden_size),
+            nn.ReLU()
+        )
+        
+        # RoPE
+        head_dim = hidden_size // num_heads
+        self.rope = RotaryEmbedding2D(head_dim, self.H_grid, self.W_grid)
+        
+        # Transformer Stack
+        self.blocks = nn.ModuleList([
+            MaskedAttentionLayer(hidden_size, num_heads, self.rope) 
+            for _ in range(layers)
+        ])
+        # Final Projection (combines Raw + Context)
+        self.final_proj = nn.Linear(hidden_size , features_dim)
+
+    def forward(self, observations: th.Tensor) -> th.Tensor:
+        if observations.dim() == 5: 
+            observations = observations.unsqueeze(0)
             
-        # --- Critic Pass (Vf) ---
-        vf_seq = combined_seq
-        for layer in self.vf_attn_layers:
-            vf_seq = layer(vf_seq, padding_mask=combined_mask)
-            
-        # Isolate attended player token at $(i,j)$ for both
+        B = observations.shape[0]
+        
+        # 1. Padding Mask Generation
+        is_padding = (observations[:, :, :, 0, 0, 0] == -1) 
+        padding_mask = is_padding.reshape(B, -1) 
+        
+        # 2. Input Cleaning & Projection
+        clean_obs = observations.clone()
+        clean_obs[clean_obs == -1] = 0
+        
+        # FIX: .reshape() handles non-contiguous memory from VecEnvs
+        obs_flat = clean_obs.reshape(B, self.H_grid, self.W_grid, -1)
+        
+        embeddings = self.mlp_extractor(obs_flat)
+        x = embeddings.reshape(B, self.seq_len, self.hidden_size)
+        
+        # 3. Player Localization
+        player_map = observations[..., 3, :, :].sum(dim=(-1, -2)) 
+        player_map_flat = player_map.reshape(B, -1)
+        player_indices = player_map_flat.argmax(dim=1) 
+        
         gather_indices = player_indices.view(B, 1, 1).expand(-1, -1, self.hidden_size)
         
-        pi_attended_spatial = pi_seq[:, self.num_prefixes:, :]
-        player_token_pi = pi_attended_spatial.gather(1, gather_indices).squeeze(1)
+        # 4. Masked Transformer Stack
+        self.rope.update_cache(x.device, x.dtype)
         
-        vf_attended_spatial = vf_seq[:, self.num_prefixes:, :]
-        player_token_vf = vf_attended_spatial.gather(1, gather_indices).squeeze(1)
+        for block in self.blocks:
+            x = block(x, padding_mask=padding_mask)
+        return (x, padding_mask, gather_indices)
+
+class  PlayerCentric(nn.Module):
+    def __init__(self, observation_space: spaces.Box, features_dim: int = 256, 
+                 hidden_size: int = 128, num_heads: int = 4, layers: int = 3, num_prefixes: int = 4):
+        super().__init__()
+        self.H_grid, self.W_grid, self.C, self.wx, self.wy = observation_space.shape
+        self.hidden_size = hidden_size
+        self.seq_len = self.H_grid * self.W_grid
         
-        # Generate Actions and Values
-        distribution = self._get_action_dist_from_latent(player_token_pi)
+        # RoPE
+        head_dim = hidden_size // num_heads
+        self.rope = RotaryEmbedding2D(head_dim, self.H_grid, self.W_grid)
+        
+        # Transformer Stack
+        self.blocks = nn.ModuleList([
+            PrefixMaskedAttentionLayer(hidden_size, num_heads, self.rope, num_prefixes) 
+            for _ in range(layers)
+        ])
+        # Final Projection (combines Raw + Context)
+        self.final_proj = nn.Linear(hidden_size , features_dim)
+        self.features_dim = features_dim
+
+    def forward(self, x: th.Tensor, padding_mask: th.Tensor, gather_indices) -> th.Tensor:
+        # 4. Masked Transformer Stack
+        self.rope.update_cache(x.device, x.dtype)
+        
+        for block in self.blocks:
+            x = block(x, padding_mask=padding_mask)
+            
+        # 5. Extract Contextualized Player Token
+        attended_player_token = x.gather(1, gather_indices).squeeze(1) 
+        
+        # 6. Final Readout
+        # -combined = th.cat([attended_player_token, raw_player_token], dim=1)
+        return self.final_proj(attended_player_token)
+
+class TemporalAttentionLayer(nn.Module):
+    def __init__(self, hidden_size, num_heads, layers, num_prefixes):
+        super().__init__()
+        assert hidden_size % num_heads == 0, "Hidden size must be divisible by number of heads"
+        self.rope_1d_module = RotaryEmbedding1D(hidden_size//num_heads)
+        self.blocks = nn.Sequential(*[
+            PrefixMaskedAttentionLayer(hidden_size, num_heads, self.rope_1d_module, num_prefixes) 
+            for _ in range(layers)
+        ])
+    def forward(self, x, padding_mask=None):
+        return self.blocks(x, padding_mask)
+
+class PrefixMLPExtractor(nn.Module):
+    def __init__(
+            self, 
+            features_dim: int, 
+            net_arch: List[int], 
+            num_prefix: int, 
+            enable_critic_prefix: bool, 
+            activation_fn: Type[nn.Module]
+        ):
+        super().__init__()
+        self.out_dim = features_dim*num_prefix
+        self.out_shape = (num_prefix, features_dim)
+        if enable_critic_prefix:
+            self.out_dim = self.out_dim*2
+            self.out_shape = (2*num_prefix, features_dim)
+
+        last_dim = features_dim
+        layers = []
+        
+        for layer in net_arch:
+            layers.append(nn.Linear(last_dim, layer))
+            layers.append(activation_fn)
+            last_dim = layer
+        
+        layers.append(nn.Linear(last_dim, self.out_dim))
+        self.ffn = nn.Sequential(*layers)
+    
+    def forward(self, x: th.Tensor):
+        features = self.ffn(x)
+        return th.reshape(features, (-1, *self.out_shape))
+
+class ARMs(nn.Module):
+    _policy: PlayerCentric
+    _critic: PlayerCentric   
+    thinker: PlayerCentric
+
+    def __init__(
+            self,
+            obs_space: spaces.Space,
+            backbone_extractor_class: Type[BaseFeaturesExtractor],
+            limbs_extractor_class: Type[nn.Module],
+            backbone_kwargs: Optional[Dict[str, Any]],
+            limbs_kwargs: Optional[Dict[str, Any]],
+            temporal_extractor_kwargs: Optional[Dict[str, Any]],
+            num_prefixes: int = 4,
+            enable_critic_prefix: bool = True
+    ):
+        super().__init__()
+        self.num_prefixes = num_prefixes
+        self.enable_critic_prefix = enable_critic_prefix
+        self.backbone = backbone_extractor_class(obs_space, **backbone_kwargs)
+        self._policy = limbs_extractor_class(obs_space, num_prefixes=num_prefixes, **limbs_kwargs)
+        self._critic = limbs_extractor_class(obs_space, num_prefixes=num_prefixes if enable_critic_prefix else 0, **limbs_kwargs)
+        self.temporal_extractor = TemporalAttentionLayer(self._policy.features_dim, num_prefixes=num_prefixes*2 if enable_critic_prefix else num_prefixes, *temporal_extractor_kwargs)
+    
+    def actor_critic(self, obs, prefix):
+        # Distinguish between actor and critic prefixes if needed
+        if self.enable_critic_prefix:
+            actor_prefix = prefix[:, :self.num_prefixes]
+            critic_prefix = prefix[:, self.num_prefixes:]
+        else:
+            actor_prefix = prefix
+            critic_prefix = None
+        backbone_out = self.backbone(obs)
+        x, padding_mask, gather_indices = backbone_out
+        x = th.cat([x, actor_prefix], dim=1)
+        new_mask = F.pad(padding_mask, (0, actor_prefix.shape[1]), value=False)
+        policy_out = self._policy(x, new_mask, gather_indices)   
+        if critic_prefix is not None:
+            critic_out = self._critic(th.cat([x, critic_prefix], dim=1), new_mask, gather_indices)
+        else:
+            critic_out = self._critic(x, padding_mask, gather_indices)
+        return policy_out, critic_out
+    def actor(self, obs, prefix):
+        if self.enable_critic_prefix:
+            actor_prefix = prefix[:, :self.num_prefixes]
+        else:
+            actor_prefix = prefix
+        backbone_out = self.backbone(obs)
+        x, padding_mask, gather_indices = backbone_out
+        x = th.cat([x, actor_prefix], dim=1)
+        new_mask = F.pad(padding_mask, (0, actor_prefix.shape[1]), value=False)
+        policy_out = self._policy(x, new_mask, gather_indices)   
+        return policy_out
+    def critic(self, obs, prefix):
+        if self.enable_critic_prefix:
+            critic_prefix = prefix[:, self.num_prefixes:]
+        else:
+            critic_prefix = None
+        backbone_out = self.backbone(obs)
+        x, padding_mask, gather_indices = backbone_out
+        if critic_prefix is not None:
+            x = th.cat([x, critic_prefix], dim=1)
+            new_mask = F.pad(padding_mask, (0, critic_prefix.shape[1]), value=False)
+            critic_out = self._critic(x, new_mask, gather_indices)
+        else:
+            critic_out = self._critic(x, padding_mask, gather_indices)
+        return critic_out
+    def bot(self, obs):
+        x, _, gather_indices = self.backbone(obs)
+        player_token = x.gather(1, gather_indices.unsqueeze(-1).expand(-1, -1, x.shape[-1])).squeeze(1)
+        return player_token
+
+    def update_prefix(self, trajectory_of_obs, prev_prefix, trajectory_mask):
+        # trajectory_of_obs: (B, T, Obs...)
+        B, T = trajectory_of_obs.shape[:2]
+        self.temporal_extractor.rope_1d_module.update_cache(T, trajectory_of_obs.device, trajectory_of_obs.dtype)
+        flat_obs = trajectory_of_obs.view(B*T, *trajectory_of_obs.shape[2:])
+        x, _, gather_indices = self.backbone(flat_obs)
+        # Get player indices to go from (B*T, Seq, D) -> (B*T, D) using gather_indices
+        player_tokens = x.gather(1, gather_indices.unsqueeze(-1).expand(-1, -1, x.shape[-1])).squeeze(1)
+        player_tokens = player_tokens.view(B, T, -1)
+        # trajectory mask accounts for T but we insert prev prefix at right of the tensor making it T + 2*num_prefixes or T + num_prefixes
+        prefix_len = prev_prefix.shape[1]
+        prefix_mask = th.zeros(
+            B,
+            prefix_len,
+            dtype=trajectory_mask.dtype,
+            device=trajectory_mask.device
+        )
+
+        combined_mask = th.cat([trajectory_mask, prefix_mask], dim=1)
+        # Combine prev prefix with player tokens
+        combined_input = th.cat([player_tokens, prev_prefix], dim=1)
+        # Process through temporal extractor
+        updated_prefix = self.temporal_extractor(combined_input, combined_mask)
+        return updated_prefix[:, -prefix_len:, :]   
+    
+class ExperiencerActorCritic(ActorCriticPolicy):
+    def __init__(
+            self,
+            observation_space: spaces.Space,
+            action_space: spaces.Space,
+            lr_schedule: Schedule,
+            net_arch: Optional[Union[List[int], Dict[str, List[int]]]] = None,
+            activation_fn: Type[nn.Module] = nn.GELU,
+            ortho_init: bool = True,
+            backbone_extractor_class: Type[BaseFeaturesExtractor] = SokoAtt,
+            limb_extractor_class: Type[nn.Module] = PlayerCentric,
+            features_extractor_coordinator_class: Type[ARMs] = ARMs,
+            backbone_extractor_kwargs: Optional[Dict[str, Any]] = None,
+            limb_extractor_kwargs: Optional[Dict[str, Any]] = None,
+            temporal_extractor_class: Type[nn.Module] = TemporalAttentionLayer,
+            temporal_extractor_kwargs: Optional[Dict[str, Any]] = None,
+            optimizer_class: Type[th.optim.Optimizer] = th.optim.Adam,
+            optimizer_kwargs: Optional[Dict[str, Any]] = None,
+            features_dim: int = 256,
+            length_prefix: int = 4,
+            shared_prefix: bool = False,
+            enable_critic_prefix: bool = True
+    ):
+        self.thinker_output_shape = (length_prefix, features_dim)
+        super().__init__(
+            observation_space,
+            action_space,
+            lr_schedule,
+            net_arch,
+            activation_fn,
+            ortho_init,
+            False, # use_sde
+            0.0, # log_std_init
+            True, # full_std
+            False, # use_expln
+            False, # squash_output
+            BaseFeaturesExtractor, #FeaturesExtractor
+            dict(features_dim=features_dim), #FeaturesExtractorKwargs
+            True, # Share features extractor (handled in arms)
+            True, # normalize_images
+            optimizer_class,
+            optimizer_kwargs,
+        )
+
+        self.temporal_extractor_kwargs = temporal_extractor_kwargs or {}
+        self.shared_prefix = shared_prefix
+        self.enable_critic_prefix = enable_critic_prefix
+        self.features_extractor = self.orchestrator = features_extractor_coordinator_class(
+            observation_space,
+            backbone_extractor_class,
+            limb_extractor_class,
+            backbone_extractor_kwargs or {},
+            limb_extractor_kwargs or {},
+            temporal_extractor_kwargs or {}
+        )
+        self.pi_features_extractor = self.orchestrator.get("pi")
+        self.vf_features_extractor = self.orchestrator.get("vf")
+        self.thinker_features_extractor = self.orchestrator.get("t1")
+        self.temporal_features_extractor = self.orchestrator.get("t2")
+
+        self._build_prefix_extractor()
+
+        self.optimizer = self.optimizer_class(self.parameters(), lr=lr_schedule(1), **self.optimizer_kwargs)
+
+    def _build_prefix_extractor(self) -> None:
+        self.prefix_extractor = PrefixMLPExtractor(
+            self.features_dim,
+            net_arch=self.net_arch["thinker"],
+            activation_fn=self.activation_fn,
+            device=self.device
+        )
+    
+    def forward(self, obs: th.Tensor, prefix: th.Tensor, deterministic: bool = False):
+        assert prefix.shape[-2:] == self.thinker_output_shape
+        pi_features, vf_features = self.orchestrator.actor_critic(obs, prefix)
+        latent_pi = self.mlp_extractor.forward_actor(pi_features)
+        latent_vf = self.mlp_extractor.forward_critic(vf_features)
+        # Evaluate the values for the given observations
+        values = self.value_net(latent_vf)
+        distribution = self._get_action_dist_from_latent(latent_pi)
         actions = distribution.get_actions(deterministic=deterministic)
         log_prob = distribution.log_prob(actions)
-        values = self.value_net(player_token_vf)
-        
+        actions = actions.reshape((-1, *self.action_space.shape))  # type: ignore[misc]
         return actions, values, log_prob
-        
-    def evaluate_actions(
-        self, 
-        obs: th.Tensor, 
-        actions: th.Tensor, 
-        prefixes: th.Tensor # Custom argument
-    ) -> Tuple[th.Tensor, th.Tensor, th.Tensor]:
-        """
-        Evaluates actions using the spatial backbone, prefixes, and separate Pi/Vf heads.
-        """
-        B = obs.shape[0]
-
-        # 1. Get spatial tokens from backbone
-        spatial_tokens, spatial_mask, player_indices = self._get_backbone_outputs(obs)
-
-        # 2. Combine [Prefix, Spatial]
-        combined_seq = th.cat([prefixes, spatial_tokens], dim=1)
-        
-        # 3. Mask setup
-        prefix_mask = th.zeros((B, self.num_prefixes), device=obs.device, dtype=th.bool)
-        combined_mask = th.cat([prefix_mask, spatial_mask], dim=1)
-
-        # 4. Actor Pass (Pi)
-        pi_seq = combined_seq
-        for layer in self.pi_attn_layers:
-            pi_seq = layer(pi_seq, padding_mask=combined_mask)
-
-        # 5. Critic Pass (Vf)
-        vf_seq = combined_seq
-        for layer in self.vf_attn_layers:
-            vf_seq = layer(vf_seq, padding_mask=combined_mask)
-
-        # 6. Gather attended player tokens
-        gather_indices = player_indices.view(B, 1, 1).expand(-1, -1, self.hidden_size)
-        
-        # Slice out the spatial part (skipping prefixes) to find the player
-        pi_attended_spatial = pi_seq[:, self.num_prefixes:, :]
-        player_token_pi = pi_attended_spatial.gather(1, gather_indices).squeeze(1)
-
-        vf_attended_spatial = vf_seq[:, self.num_prefixes:, :]
-        player_token_vf = vf_attended_spatial.gather(1, gather_indices).squeeze(1)
-
-        # 7. Distribution and Values
-        distribution = self._get_action_dist_from_latent(player_token_pi)
+    
+    def evaluate_actions(self, obs: PyTorchObs, actions: th.Tensor, prefix: th.Tensor) -> Tuple[th.Tensor, th.Tensor,  th.Tensor]:
+        assert prefix.shape[-2:] == self.thinker_output_shape
+        pi_features, vf_features = self.orchestrator.actor_critic(obs, prefix)
+        latent_pi = self.mlp_extractor.forward_actor(pi_features)
+        latent_vf = self.mlp_extractor.forward_critic(vf_features)
+        distribution = self._get_action_dist_from_latent(latent_pi)
         log_prob = distribution.log_prob(actions)
+        values = self.value_net(latent_vf)
         entropy = distribution.entropy()
-        values = self.value_net(player_token_vf)
-
         return values, log_prob, entropy
 
-    def upgrade_prefix_with_trajectory(self, prev_prefix, trajectory_of_obs, trajectory_mask):
-            """
-            Inputs:
-                prev_prefix: (B, P, D)
-                trajectory_of_obs: (B, S, ...) repeated at the end if S < max_len
-                trajectory_mask: (B, S) where True means PAD (ignore), False means KEEP
-            """
-            B, S = trajectory_of_obs.shape[:2]
-            
-            # 1. Spatial Processing
-            flat_obs = trajectory_of_obs.reshape(B * S, *trajectory_of_obs.shape[2:])
-            spatial_tokens, spatial_mask, _ = self._get_backbone_outputs(flat_obs)
-            
-            exp_prefix = prev_prefix.unsqueeze(1).expand(-1, S, -1, -1).reshape(B * S, self.num_prefixes, self.hidden_size)
-            combined_seq = th.cat([exp_prefix, spatial_tokens], dim=1)
-            
-            # Spatial prefix mask (prefixes are always valid)
-            prefix_mask_spat = th.zeros((B * S, self.num_prefixes), device=flat_obs.device, dtype=th.bool)
-            combined_mask_spat = th.cat([prefix_mask_spat, spatial_mask], dim=1)
-            
-            for layer in self.thinker_spatial:
-                combined_seq = layer(combined_seq, padding_mask=combined_mask_spat)
-                
-            mod_prefixes = combined_seq[:, :self.num_prefixes, :].reshape(B, S, self.num_prefixes, self.hidden_size)
-
-            # 2. Temporal Alignment
-            # Construct temporal sequence: [Original, Step1, Step2, ...]
-            temporal_stack = th.cat([prev_prefix.unsqueeze(1), mod_prefixes], dim=1) # (B, 1+S, P, D)
-            
-            # Reshape to treat each prefix slot as an independent sequence
-            temporal_seq = temporal_stack.transpose(1, 2).reshape(B * self.num_prefixes, 1 + S, self.hidden_size)
-            
-            # Construct Temporal Mask
-            # Index 0 (original prefix) is always False (keep). 
-            # Indices 1..S follow trajectory_mask.
-            orig_mask = th.zeros((B, 1), device=trajectory_mask.device, dtype=th.bool)
-            full_traj_mask = th.cat([orig_mask, trajectory_mask], dim=1) # (B, 1+S)
-            
-            # Repeat mask for all prefix slots
-            temporal_mask = full_traj_mask.unsqueeze(1).expand(-1, self.num_prefixes, -1).reshape(B * self.num_prefixes, 1 + S)
-            
-            # 3. Apply 1D Thinker
-            self.rope1d.update_cache(1 + S, temporal_seq.device, temporal_seq.dtype)
-            upgraded_seq = self.thinker_temporal(temporal_seq, padding_mask=temporal_mask)
-            
-            # 4. Extract at index 0 (the anchor position)
-            upgraded_flat = upgraded_seq[:, 0, :] 
-            return upgraded_flat.reshape(B, self.num_prefixes, self.hidden_size)
-
-
-
-
-if __name__ == "__main__":
-    def test_overfit_drive():
-        from gym_sokoban.envs import SokobanEnv
-        from sokoban_wrapper import SokoCanonicalWithAttPadding
-        my_env = SokoCanonicalWithAttPadding(SokobanEnv(), (12,12), 3)
-
-        obs_space = my_env.observation_space
-        action_space = my_env.action_space
-
-        device = th.device("cuda" if th.cuda.is_available() else "cpu")
-        policy = ExperiencerActorCritic(
-            obs_space, action_space, lambda _: 3e-4,
-            hidden_size=128, num_prefixes=4
-        ).to(device)
-        print("--- Starting Overfit Stress Test ---")
-        # 1. Setup
-        B, S, P, D = 1, 10, 4, 128
-        device = next(policy.parameters()).device
-        
-        # Static observation and a "target" trajectory
-        obs, _ = my_env.reset()
-        obs_tensor = th.as_tensor(obs).unsqueeze(0).to(device)
-        traj = obs_tensor.unsqueeze(1).repeat(1, S, 1, 1, 1, 1, 1) # Static trajectory
-        mask = th.zeros((1, S), dtype=th.bool, device=device)
-        
-        # We want the model to learn that for this obs, Action 2 is the 'correct' one
-        target_action = th.tensor([2], device=device)
-        
-        # 2. Optimization Setup
-        # We optimize the generator and the thinker to agree on Action 2
-        optimizer = th.optim.Adam(policy.parameters(), lr=1e-4)
-        
-        print(f"Goal: Force policy to pick Action {target_action.item()} via prefix upgrade.")
-        
-        for i in range(50):
-            optimizer.zero_grad()
-            
-            # Step A: Get Initial Prefix
-            prefix = policy.make_initial_prefix(obs_tensor)
-            
-            # Step B: Upgrade it via the Thinker
-            upgraded_prefix = policy.upgrade_prefix_with_trajectory(prefix, traj, mask)
-            
-            # Step C: Get Action Distribution from the UPGRADED prefix
-            # We manually call the forward logic with the upgraded prefix
-            spatial_tokens, spatial_mask, player_indices = policy._get_backbone_outputs(obs_tensor)
-            combined = th.cat([upgraded_prefix, spatial_tokens], dim=1)
-            
-            # Setup mask for combined seq
-            p_mask = th.zeros((B, P), device=device, dtype=th.bool)
-            c_mask = th.cat([p_mask, spatial_mask], dim=1)
-            
-            # Actor Pass
-            pi_seq = combined
-            for layer in policy.pi_attn_layers:
-                pi_seq = layer(pi_seq, padding_mask=c_mask)
-            
-            # Extract player token and distribution
-            gather_idx = player_indices.view(B, 1, 1).expand(-1, -1, D)
-            player_token = pi_seq[:, P:, :].gather(1, gather_idx).squeeze(1)
-            dist = policy._get_action_dist_from_latent(player_token)
-            
-            # Loss: Negative Log Prob of the target action
-            loss = -dist.log_prob(target_action).mean()
-            
-            loss.backward()
-            optimizer.step()
-            
-            if i % 10 == 0:
-                prob = th.exp(-loss).item()
-                print(f"Iteration {i:02d} | Target Action Prob: {prob:.4f} | Loss: {loss.item():.4f}")
-
-        print("--- Overfit Test Complete ---")
-    test_overfit_drive()
+    def get_distribution(self, obs: PyTorchObs, prefix: th.Tensor) -> Distribution:
+        assert prefix.shape[-2:] == self.thinker_output_shape
+        features = self.orchestrator.actor(obs, prefix)
+        latent_pi = self.mlp_extractor.forward_actor(features)
+        return self._get_action_dist_from_latent(latent_pi)
+    
+    def predict_values(self, obs: PyTorchObs, prefix: th.Tensor) -> th.Tensor:
+        assert prefix.shape[-2:] == self.thinker_output_shape
+        features = self.orchestrator.critic(obs, prefix)
+        latent_vf = self.mlp_extractor.forward_critic(features)
+        return self.value_net(latent_vf)
+    
+    def make_initial_prefix(self, obs: th.Tensor) -> th.Tensor:
+        prefix_features = self.orchestrator.bot(obs) #BOT: Beginning Of Thinking
+        latent_prefixes = self.prefix_extractor(prefix_features) # pipeline: obs -> att -> select player token -> prefix extractor MLP -> initial prefix
+        return  latent_prefixes
+    
+    def upgrade_prefix_with_trajectory(self, prev_prefix: th.Tensor, trajectory_of_obs: th.Tensor, trajectory_mask: th.Tensor):
+        return self.orchestrator.update_prefix(trajectory_of_obs, prev_prefix, trajectory_mask)

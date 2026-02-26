@@ -227,13 +227,17 @@ class SokobanEnv(gym.Env):
             print("[SOKOBAN] Retry . . .")
             return self.reset(seed=seed, options=options, second_player=second_player, render_mode=render_mode)
 
+        if hasattr(self, "num_env_steps"):
+            my_env_steps = self.num_env_steps
+        else:
+            my_env_steps = 0
         self.player_position = np.argwhere(self.room_state == 5)[0]
         self.num_env_steps = 0
         self.reward_last = 0
         self.boxes_on_target = 0
 
         starting_observation = self.render(mode=render_mode)
-        info = {}
+        info = {"steps_taken":my_env_steps}
         return starting_observation, info
 
     def render(self, mode=None, close=None, scale=1):
