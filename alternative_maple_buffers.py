@@ -551,7 +551,7 @@ class PrefixRolloutBuffer(RolloutBuffer):
 
     def reset(self) -> None:
         super().reset()
-        self.indices = np.zeros((self.buffer_size, self.envs), dtype=np.int64)
+        self.indices = np.zeros((self.buffer_size, self.n_envs), dtype=np.int64)
 
     def set_prefix(self, prefix, _id):
         self.incorporate(prefix)
@@ -580,12 +580,10 @@ class PrefixRolloutBuffer(RolloutBuffer):
         if batch_size is None:
             batch_size = self.buffer_size * self.n_envs
         start_idx = 0
-        try:
-            while start_idx < self.buffer_size * self.n_envs:
-                yield self._get_samples(indices[start_idx : start_idx + batch_size])
-                start_idx += batch_size
-        finally:
-            self.prefixes = self.prefixes.detach().clone()
+        while start_idx < self.buffer_size * self.n_envs:
+            yield self._get_samples(indices[start_idx : start_idx + batch_size])
+            start_idx += batch_size
+            
 
         
     def _get_samples(

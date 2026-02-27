@@ -405,9 +405,14 @@ class PrefixMLPExtractor(nn.Module):
             net_arch: List[int], 
             num_prefix: int, 
             enable_critic_prefix: bool, 
-            activation_fn: Type[nn.Module]
+            activation_fn: Type[nn.Module],
+            device: Union[str, th.device] = "auto"
         ):
         super().__init__()
+        if device == "auto":
+            self.device = th.device("cuda" if th.cuda.is_available() else "cpu")
+        else:
+            self.device = th.device(device)
         self.out_dim = features_dim*num_prefix
         self.out_shape = (num_prefix, features_dim)
         if enable_critic_prefix:
@@ -426,7 +431,10 @@ class PrefixMLPExtractor(nn.Module):
         self.ffn = nn.Sequential(*layers)
     
     def forward(self, x: th.Tensor):
+        if x.device != self.device:
+            x = x.to(self.device)
         features = self.ffn(x)
+
         return th.reshape(features, (-1, *self.out_shape))
 
 class ARMs(nn.Module):
@@ -451,7 +459,7 @@ class ARMs(nn.Module):
         self.backbone = backbone_extractor_class(obs_space, **backbone_kwargs)
         self._policy = limbs_extractor_class(obs_space, num_prefixes=num_prefixes, **limbs_kwargs)
         self._critic = limbs_extractor_class(obs_space, num_prefixes=num_prefixes if enable_critic_prefix else 0, **limbs_kwargs)
-        self.temporal_extractor = TemporalAttentionLayer(self._policy.features_dim, num_prefixes=num_prefixes*2 if enable_critic_prefix else num_prefixes, *temporal_extractor_kwargs)
+        self.temporal_extractor = TemporalAttentionLayer(num_prefixes=(num_prefixes*2 if enable_critic_prefix else num_prefixes), **temporal_extractor_kwargs)
     
     def actor_critic(self, obs, prefix):
         # Distinguish between actor and critic prefixes if needed
@@ -540,14 +548,14 @@ class ExperiencerActorCritic(ActorCriticPolicy):
             features_extractor_coordinator_class: Type[ARMs] = ARMs,
             backbone_extractor_kwargs: Optional[Dict[str, Any]] = None,
             limb_extractor_kwargs: Optional[Dict[str, Any]] = None,
-            temporal_extractor_class: Type[nn.Module] = TemporalAttentionLayer,
             temporal_extractor_kwargs: Optional[Dict[str, Any]] = None,
             optimizer_class: Type[th.optim.Optimizer] = th.optim.Adam,
             optimizer_kwargs: Optional[Dict[str, Any]] = None,
             features_dim: int = 256,
             length_prefix: int = 4,
             shared_prefix: bool = False,
-            enable_critic_prefix: bool = True
+            enable_critic_prefix: bool = True,
+            use_sde: bool = False,
     ):
         self.thinker_output_shape = (length_prefix, features_dim)
         super().__init__(
@@ -581,10 +589,6 @@ class ExperiencerActorCritic(ActorCriticPolicy):
             limb_extractor_kwargs or {},
             temporal_extractor_kwargs or {}
         )
-        self.pi_features_extractor = self.orchestrator.get("pi")
-        self.vf_features_extractor = self.orchestrator.get("vf")
-        self.thinker_features_extractor = self.orchestrator.get("t1")
-        self.temporal_features_extractor = self.orchestrator.get("t2")
 
         self._build_prefix_extractor()
 
