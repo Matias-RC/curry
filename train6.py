@@ -33,7 +33,7 @@ config_dicts = [
 if __name__ == "__main__":
 
     # --- Global Configuration ---
-    NUM_ENVS = 1
+    NUM_ENVS = 2
     SEED = 123
     TOTAL_TIMESTEPS = 4_000
 
@@ -72,12 +72,10 @@ if __name__ == "__main__":
     print("Initializing EPPO with ExperiencerActorCritic...")
 
     # Define Prefix Constraints
-    NUM_ACTOR_PREFIXES = 4
+    NUM_PREFIXES = 4
     ENABLE_CRITIC_PREFIX = True
     FEATURES_DIM = 256
     
-    # If critic prefix is enabled, the thinker outputs 2x the prefixes
-    TOTAL_PREFIXES = NUM_ACTOR_PREFIXES * 2 if ENABLE_CRITIC_PREFIX else NUM_ACTOR_PREFIXES
 
     model = EPPO(
         policy=ExperiencerActorCritic,
@@ -88,14 +86,14 @@ if __name__ == "__main__":
         n_epochs=10,
         rollout_buffer_class=PrefixRolloutBuffer,
         rollout_buffer_kwargs=dict(
-            prefix_shape=(TOTAL_PREFIXES, FEATURES_DIM), 
+            prefix_shape=(NUM_PREFIXES*2, FEATURES_DIM), 
             prefix_lr=1e-3
         ),
         verbose=1,
         tensorboard_log="./tensorboard/",
         policy_kwargs=dict(
             features_dim=FEATURES_DIM,
-            length_prefix=TOTAL_PREFIXES,
+            length_prefix=NUM_PREFIXES,
             enable_critic_prefix=ENABLE_CRITIC_PREFIX,
             backbone_extractor_kwargs=dict(
                 hidden_size=256, 

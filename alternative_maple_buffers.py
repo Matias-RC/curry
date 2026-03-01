@@ -568,9 +568,10 @@ class PrefixRolloutBuffer(RolloutBuffer):
     def set_forget(self, _id):
         self.forget_registry.add(_id)
     
-    def prepare_prefix_optimizer(self, learning_rate):
+    def prepare_prefix_optimizer(self, learning_rate, device):
         self.prefixes = nn.Parameter(self.prefixes)
         optimizer = self.optimizer_class([self.prefixes], lr=learning_rate)
+        self.prefixes.to(device)
         return optimizer
     def get(self, batch_size: Optional[int] = None) -> Generator[PRBSamples, None, None]:
         assert self.full, ""
@@ -601,7 +602,7 @@ class PrefixRolloutBuffer(RolloutBuffer):
         )
         return PRBSamples(*tuple(map(self.to_torch, data)))
 
-    def generate_supervition_buffer(self):
+    def generate_supervision_buffer(self):
         """
         Unlike get() which can be affordable.
         This method has to itrate through the buffer before even yielding.
@@ -639,27 +640,31 @@ class PrefixRolloutBuffer(RolloutBuffer):
                 max_traj_len = max(max_traj_len, current_traj_len)
                 current_traj_len = 0
         # Ensure that each trayectory is padded with valid observations and make masks
-        masks = []
+        padding_masks = []
         for item in trajectories:
             #repeat the last item until max len is reached
             mask_len = 0
             while len(item) < max_traj_len:
                 item.append(item[-1])
                 mask_len += 1
-            masks.append([False]*(max_traj_len-mask_len) + [True]*mask_len)
+            padding_masks.append([False]*(max_traj_len-mask_len) + [True]*mask_len)
 
-        #make tensors
-        inputs = []
-        masks = []
-        targets = []
-        for item, mask in zip(trajectories, masks):
-            inputs.append(th.stack([i["obs"] for i in item]))
-            masks.append(th.tensor(mask))
-            targets.append(self.prefixes[item[0]["index"]])
+        # Make tensors
+        tensor_inputs = []
+        tensor_masks = []
+        tensor_targets = []
+        
+        for item, mask in zip(trajectories, padding_masks):
+            # Note: Wrap in th.as_tensor() if i["obs"] is a numpy array, 
+            # since th.stack expects a list of tensors.
+            tensor_inputs.append(th.stack([th.as_tensor(i["obs"]) for i in item]))
+            tensor_masks.append(th.tensor(mask))
+            tensor_targets.append(self.prefixes[item[0]["index"]])
+            
         return PRBSupervisionSamples(
-            inputs=th.stack(inputs),
-            masks=th.stack(masks),
-            targets=th.stack(targets)
+            inputs=th.stack(tensor_inputs),
+            masks=th.stack(tensor_masks),
+            targets=th.stack(tensor_targets)
         )
 
 
@@ -670,10 +675,10 @@ class PrefixRolloutBuffer(RolloutBuffer):
         for start_idx in range(0, len(indices), batch_size):
             batch_inds = indices[start_idx : start_idx + batch_size]
             
-            yield (
-                supervision_samples.inputs[batch_inds], 
-                supervision_samples.masks[batch_inds], 
-                supervision_samples.targets[batch_inds]
+            yield PRBSupervisionSamples(
+                inputs=supervision_samples.inputs[batch_inds], 
+                masks=supervision_samples.masks[batch_inds], 
+                targets=supervision_samples.targets[batch_inds].detach()
             )
     
     def add(
@@ -686,6 +691,10 @@ class PrefixRolloutBuffer(RolloutBuffer):
         log_prob: th.Tensor,
         instance_ids: List[str]
     ) -> None:
+        index = []
+        for _id in instance_ids:
+            index.append(self.prefix_register[_id])
+        self.indices[self.pos] = np.array(index)
         super().add(
             obs,
             action,
@@ -694,10 +703,7 @@ class PrefixRolloutBuffer(RolloutBuffer):
             value,
             log_prob
         )
-        index = []
-        for _id in instance_ids:
-            index.append(self.prefix_register[_id])
-        self.indices[self.pos] = np.array(index)
+
 
 
 

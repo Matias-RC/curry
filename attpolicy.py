@@ -20,6 +20,8 @@ from stable_baselines3.common.distributions import (
 )
 from stable_baselines3.common.type_aliases import PyTorchObs, Schedule
 
+from functools import partial
+
 class RotaryEmbedding2D(nn.Module):
     def __init__(self, dim, max_h, max_w, base=10000):
         super().__init__()
@@ -36,7 +38,8 @@ class RotaryEmbedding2D(nn.Module):
         self.cache = None
 
     def update_cache(self, device, dtype):
-        if self.cache is not None: return
+        if self.cache is not None and self.cos_cached.device == device: 
+            return
 
         y = th.arange(self.max_h, device=device, dtype=self.inv_freq_y.dtype)
         x = th.arange(self.max_w, device=device, dtype=self.inv_freq_x.dtype)
@@ -73,15 +76,16 @@ class RotaryEmbedding1D(nn.Module):
     """1D RoPE with caching to match the policy's update_cache calls."""
     def __init__(self, dim, base=10000):
         super().__init__()
-        self.inv_freq = 1.0 / (base ** (th.arange(0, dim, 2).float() / dim))
+        inv_freq = 1.0 / (base ** (th.arange(0, dim, 2).float() / dim))
+        self.register_buffer("inv_freq", inv_freq)
         self.cache = None
         self.cos_cached = None
         self.sin_cached = None
 
     def update_cache(self, seq_len, device, dtype):
-        if self.cache is not None and self.cache >= seq_len:
+        if self.cache is not None and self.cache >= seq_len and self.cos_cached.device == device:
             return
-        t = th.arange(seq_len, device=device).type_as(self.inv_freq)
+        t = th.arange(seq_len, device=device, dtype=self.inv_freq.dtype)
         freqs = th.einsum("i, j -> ij", t, self.inv_freq)
         emb = th.cat((freqs, freqs), dim=-1)
         self.cos_cached = emb.cos().to(dtype)
@@ -391,12 +395,14 @@ class TemporalAttentionLayer(nn.Module):
         super().__init__()
         assert hidden_size % num_heads == 0, "Hidden size must be divisible by number of heads"
         self.rope_1d_module = RotaryEmbedding1D(hidden_size//num_heads)
-        self.blocks = nn.Sequential(*[
+        self.blocks = nn.ModuleList([
             PrefixMaskedAttentionLayer(hidden_size, num_heads, self.rope_1d_module, num_prefixes) 
             for _ in range(layers)
         ])
     def forward(self, x, padding_mask=None):
-        return self.blocks(x, padding_mask)
+        for block in self.blocks:
+            x = block(x, padding_mask)
+        return x
 
 class PrefixMLPExtractor(nn.Module):
     def __init__(
@@ -404,35 +410,27 @@ class PrefixMLPExtractor(nn.Module):
             features_dim: int, 
             net_arch: List[int], 
             num_prefix: int, 
-            enable_critic_prefix: bool, 
             activation_fn: Type[nn.Module],
-            device: Union[str, th.device] = "auto"
         ):
         super().__init__()
-        if device == "auto":
-            self.device = th.device("cuda" if th.cuda.is_available() else "cpu")
-        else:
-            self.device = th.device(device)
         self.out_dim = features_dim*num_prefix
         self.out_shape = (num_prefix, features_dim)
-        if enable_critic_prefix:
-            self.out_dim = self.out_dim*2
-            self.out_shape = (2*num_prefix, features_dim)
 
         last_dim = features_dim
         layers = []
         
         for layer in net_arch:
             layers.append(nn.Linear(last_dim, layer))
-            layers.append(activation_fn)
+            layers.append(activation_fn())
             last_dim = layer
         
         layers.append(nn.Linear(last_dim, self.out_dim))
         self.ffn = nn.Sequential(*layers)
     
     def forward(self, x: th.Tensor):
-        if x.device != self.device:
-            x = x.to(self.device)
+        target_device = next(self.ffn.parameters()).device
+        if x.device != target_device:
+            x = x.to(target_device)
         features = self.ffn(x)
 
         return th.reshape(features, (-1, *self.out_shape))
@@ -450,7 +448,7 @@ class ARMs(nn.Module):
             backbone_kwargs: Optional[Dict[str, Any]],
             limbs_kwargs: Optional[Dict[str, Any]],
             temporal_extractor_kwargs: Optional[Dict[str, Any]],
-            num_prefixes: int = 4,
+            num_prefixes: int,
             enable_critic_prefix: bool = True
     ):
         super().__init__()
@@ -460,7 +458,7 @@ class ARMs(nn.Module):
         self._policy = limbs_extractor_class(obs_space, num_prefixes=num_prefixes, **limbs_kwargs)
         self._critic = limbs_extractor_class(obs_space, num_prefixes=num_prefixes if enable_critic_prefix else 0, **limbs_kwargs)
         self.temporal_extractor = TemporalAttentionLayer(num_prefixes=(num_prefixes*2 if enable_critic_prefix else num_prefixes), **temporal_extractor_kwargs)
-    
+        self.features_dim = self._policy.hidden_size
     def actor_critic(self, obs, prefix):
         # Distinguish between actor and critic prefixes if needed
         if self.enable_critic_prefix:
@@ -506,7 +504,7 @@ class ARMs(nn.Module):
         return critic_out
     def bot(self, obs):
         x, _, gather_indices = self.backbone(obs)
-        player_token = x.gather(1, gather_indices.unsqueeze(-1).expand(-1, -1, x.shape[-1])).squeeze(1)
+        player_token = x.gather(1, gather_indices).squeeze(1)
         return player_token
 
     def update_prefix(self, trajectory_of_obs, prev_prefix, trajectory_mask):
@@ -516,7 +514,7 @@ class ARMs(nn.Module):
         flat_obs = trajectory_of_obs.view(B*T, *trajectory_of_obs.shape[2:])
         x, _, gather_indices = self.backbone(flat_obs)
         # Get player indices to go from (B*T, Seq, D) -> (B*T, D) using gather_indices
-        player_tokens = x.gather(1, gather_indices.unsqueeze(-1).expand(-1, -1, x.shape[-1])).squeeze(1)
+        player_tokens = x.gather(1, gather_indices).squeeze(1)
         player_tokens = player_tokens.view(B, T, -1)
         # trajectory mask accounts for T but we insert prev prefix at right of the tensor making it T + 2*num_prefixes or T + num_prefixes
         prefix_len = prev_prefix.shape[1]
@@ -557,7 +555,19 @@ class ExperiencerActorCritic(ActorCriticPolicy):
             enable_critic_prefix: bool = True,
             use_sde: bool = False,
     ):
-        self.thinker_output_shape = (length_prefix, features_dim)
+        assert isinstance(net_arch, dict)
+        assert len(net_arch.keys() & {"pi", "vf", "thinker"}) == 3, \
+        "net_arch must contain 'pi', 'vf', and 'thinker' keys!"
+        self.thinker_output_shape = (length_prefix*2, features_dim) if enable_critic_prefix else (length_prefix, features_dim)
+        self.temporal_extractor_kwargs = temporal_extractor_kwargs or {}
+        self.shared_prefix = shared_prefix
+        self.enable_critic_prefix = enable_critic_prefix
+        self.features_extractor_coordinator_class = features_extractor_coordinator_class
+        self.backbone_extractor_class = backbone_extractor_class
+        self.limb_extractor_class = limb_extractor_class
+        self.backbone_extractor_kwargs = backbone_extractor_kwargs
+        self.limb_extractor_kwargs = limb_extractor_kwargs
+
         super().__init__(
             observation_space,
             action_space,
@@ -578,30 +588,72 @@ class ExperiencerActorCritic(ActorCriticPolicy):
             optimizer_kwargs,
         )
 
-        self.temporal_extractor_kwargs = temporal_extractor_kwargs or {}
-        self.shared_prefix = shared_prefix
-        self.enable_critic_prefix = enable_critic_prefix
-        self.features_extractor = self.orchestrator = features_extractor_coordinator_class(
-            observation_space,
-            backbone_extractor_class,
-            limb_extractor_class,
-            backbone_extractor_kwargs or {},
-            limb_extractor_kwargs or {},
-            temporal_extractor_kwargs or {}
-        )
-
+        self.orchestrator = self.features_extractor
         self._build_prefix_extractor()
-
-        self.optimizer = self.optimizer_class(self.parameters(), lr=lr_schedule(1), **self.optimizer_kwargs)
 
     def _build_prefix_extractor(self) -> None:
         self.prefix_extractor = PrefixMLPExtractor(
             self.features_dim,
             net_arch=self.net_arch["thinker"],
             activation_fn=self.activation_fn,
-            device=self.device
+            num_prefix=self.thinker_output_shape[0]
         )
     
+    def make_features_extractor(self):
+        extractor = self.features_extractor_coordinator_class(
+            obs_space=self.observation_space,
+            backbone_extractor_class=self.backbone_extractor_class,
+            limbs_extractor_class=self.limb_extractor_class,
+            backbone_kwargs=self.backbone_extractor_kwargs,
+            limbs_kwargs=self.limb_extractor_kwargs,
+            temporal_extractor_kwargs=self.temporal_extractor_kwargs,
+            num_prefixes=self.thinker_output_shape[0]
+        )
+        return extractor
+             
+    
+    def _build(self, lr_schedule: Schedule):
+        self._build_mlp_extractor()
+
+        latent_dim_pi = self.mlp_extractor.latent_dim_pi
+
+        if isinstance(self.action_dist, DiagGaussianDistribution):
+            self.action_net, self.log_std = self.action_dist.proba_distribution_net(
+                latent_dim=latent_dim_pi, log_std_init=self.log_std_init
+            )
+        elif isinstance(self.action_dist, StateDependentNoiseDistribution):
+            self.action_net, self.log_std = self.action_dist.proba_distribution_net(
+                latent_dim=latent_dim_pi, latent_sde_dim=latent_dim_pi, log_std_init=self.log_std_init
+            )
+        elif isinstance(self.action_dist, (CategoricalDistribution, MultiCategoricalDistribution, BernoulliDistribution)):
+            self.action_net = self.action_dist.proba_distribution_net(latent_dim=latent_dim_pi)
+        else:
+            raise NotImplementedError(f"Unsupported distribution '{self.action_dist}'.")
+        
+        self.value_net = nn.Linear(self.mlp_extractor.latent_dim_vf, 1)
+        # Init weigths: ose orthogonal initialization
+        # With small initial weigth for the output
+        if self.ortho_init:
+            module_gains = {
+                self.features_extractor: np.sqrt(2),
+                self.mlp_extractor: np.sqrt(2),
+                self.action_net: 0.01,
+                self.value_net: 1
+            }
+
+            
+            for module, gain in module_gains.items():
+                module.apply(partial(self.init_weights, gain=gain))
+
+            if hasattr(self.features_extractor, 'temporal_extractor'):
+                self.features_extractor.temporal_extractor.apply(
+                    partial(self.init_weights, gain=1.0)
+                )
+
+        # Setup optimizer with initial learning rate
+        self.optimizer = self.optimizer_class(self.parameters(), lr=lr_schedule(1), **self.optimizer_kwargs)  # type: ignore[call-arg]
+
+
     def forward(self, obs: th.Tensor, prefix: th.Tensor, deterministic: bool = False):
         assert prefix.shape[-2:] == self.thinker_output_shape
         pi_features, vf_features = self.orchestrator.actor_critic(obs, prefix)

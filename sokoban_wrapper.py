@@ -294,8 +294,8 @@ class SokoCanonicalWithAttPadding(gym.ObservationWrapper):
         padded[:, :grid_h, :grid_w] = compact
 
         # mask outside real board
-        padded[:, grid_h:, :] = -1.0
-        padded[:, :, grid_w:] = -1.0
+        padded[0, grid_h:, :] = 1.0
+        padded[0, :, grid_w:] = 1.0
 
         # -------------------------------------------------
         # 3) Attention masking per window
@@ -482,6 +482,7 @@ class SokoPoolCurriculumEnv(SokobanEnv):
 
     def reset(self, seed=None, options=None, second_player=False, render_mode='rgb_array'):
         # 1. Update stats for the instance that just finished an episode
+        # TODO: make "past_id", "forget" into the env dict 
         past_id = self.active_instance_id
         forget = False
         if self.active_instance_id in self.pool and self._last_done:

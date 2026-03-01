@@ -124,7 +124,6 @@ class EPPO(OnPolicyAlgorithm):
             self.observation_space, self.action_space, self.lr_schedule, use_sde=self.use_sde, **self.policy_kwargs
         )
         self.policy = self.policy.to(self.device)
-        self.rollout_buffer.to(self.device)
 
         # Initialize schedules for policy/value clipping
         self.clip_range = get_schedule_fn(self.clip_range)
@@ -178,26 +177,29 @@ class EPPO(OnPolicyAlgorithm):
                 if (
                     done
                     and infos[idx].get("terminal_observation") is not None
-                    and infos[idx].get("TimeLimit.truncated", False)
                 ):
                     #{"plays": inst['plays'], "wins": inst['wins'], "instance_id":self.active_instance_id, "past_id":past_id, "forget": forget}
-                    max_steps_seen = max(max_steps_seen, infos[idx]["steps_taken"])
+                    reset_infos_idx = self.env.reset_infos[idx]
+                    max_steps_seen = max(max_steps_seen, infos[idx]["episode"]["l"])
                     terminal_obs = self.policy.obs_to_tensor(infos[idx]["terminal_observation"])[0]
-                    tensorized_new_obs = self.policy.obs_to_tensor(new_obs)
-                    current_id_idx = infos[idx]["instance_id"]
-                    past_id_idx = infos[idx]["past_id"]
-                    forget_idx = infos[idx]["forget"]
+                    tensorized_new_obs = self.policy.obs_to_tensor(new_obs[idx])[0]
+                    current_id_idx = reset_infos_idx["instance_id"]
+                    past_id_idx = reset_infos_idx["past_id"]
+                    forget_idx = reset_infos_idx["forget"]
                     prefix = self.rollout_buffer.get_prefix(current_id_idx)
                     with th.no_grad():
                         if prefix is None:
                             prefix = self.policy.make_initial_prefix(tensorized_new_obs)
                             self.rollout_buffer.set_prefix(prefix, current_id_idx)
-                        terminal_value = self.policy.predict_values(terminal_obs, self._current_prefixes[idx])[0]  # type: ignore[arg-type]
                     if forget_idx:
                         self.rollout_buffer.set_forget(past_id_idx)
                     instance_ids.append(past_id_idx)
                     self._current_prefixes[idx] = prefix
-                    rewards[idx] += self.gamma * terminal_value
+                    if infos[idx].get("TimeLimit.truncated", False):
+                        with th.no_grad():
+                            terminal_value = self.policy.predict_values(terminal_obs, self._current_prefixes[idx].unsqueeze(0))[0]  # type: ignore[arg-type]
+                        rewards[idx] += self.gamma * terminal_value
+
                 else:
                     instance_ids.append(infos[idx]["instance_id"])
             
@@ -215,7 +217,7 @@ class EPPO(OnPolicyAlgorithm):
         
         with th.no_grad():
             # Compute value for the last timestep
-            values = self.policy.predict_values(obs_as_tensor(new_obs, self.device))  # type: ignore[arg-type]
+            values = self.policy.predict_values(obs_as_tensor(new_obs, self.device), self._current_prefixes)  # type: ignore[arg-type]
 
         rollout_buffer.compute_returns_and_advantage(last_values=values, dones=dones)
 
@@ -241,7 +243,10 @@ class EPPO(OnPolicyAlgorithm):
 
         continue_training = True
 
-        prefix_optimizer = self.rollout_buffer.prepare_prefix_optimizer(self.prefix_learning_rate)
+        prefix_optimizer = self.rollout_buffer.prepare_prefix_optimizer(self.prefix_learning_rate, self.device)
+        # Organize the second section of the buffer onto (B, max_steps, *obs_shape) and set targets to (B, *prefix_shape)
+        # This has to be done before the first loop even though it drags ram becuase  otherwise the arangement of the tensor is lost.
+        supervision_samples = self.rollout_buffer.generate_supervision_buffer()
 
         # For every epoch do a complete pass on the rollout buffer
         for epoch in range(self.n_epochs):
@@ -327,22 +332,22 @@ class EPPO(OnPolicyAlgorithm):
         
         explained_var = explained_variance(self.rollout_buffer.values.flatten(), self.rollout_buffer.returns.flatten())
 
-        # Organize the second section of the buffer onto (B, max_steps, *obs_shape) and set targets to (B, *prefix_shape)
-        supervition_samples = self.rollout_buffer.generate_supervition_buffer()
+        traj_len = supervision_samples.inputs.shape[1]
+
         
         supervision_losses = []
 
         # After which do a complete pass on the reorganized buffer for training the thinker
         for epoch in range(self.n_epochs):
-            for supervition_data in self.rollout_buffer.get_trajectory_batches(self.batch_size, supervition_samples):
-                in_data = supervition_data.inputs
-                input_traj_mask = supervition_data.masks
-                targets = supervition_data.targets
+            for supervision_data in self.rollout_buffer.get_trajectory_batches(max(1, self.batch_size//traj_len), supervision_samples):
+                in_data = supervision_data.inputs
+                input_traj_mask = supervision_data.masks
+                targets = supervision_data.targets
 
                 prefixes = self.policy.make_initial_prefix(in_data[:, 0])
-                upgade_prefixes = self.policy.upgrade_prefix_with_trajectory(prefixes, in_data, input_traj_mask)
+                upgrade_prefixes = self.policy.upgrade_prefix_with_trajectory(prefixes, in_data, input_traj_mask)
 
-                loss = th.nn.functional.mse_loss(prefixes, targets) + th.nn.functional.mse_loss(upgade_prefixes, targets)
+                loss = th.nn.functional.mse_loss(prefixes, targets) + th.nn.functional.mse_loss(upgrade_prefixes, targets)
                 supervision_losses.append(loss.item())
                 self.policy.optimizer.zero_grad()
                 loss.backward()
@@ -366,13 +371,15 @@ class EPPO(OnPolicyAlgorithm):
 
         if self.clip_range_vf is not None:
             self.logger.record("train/clip_range_vf", clip_range_vf)
-        self.logger.record("supervition/loss", np.mean(supervision_losses))
+        self.logger.record("supervision/loss", np.mean(supervision_losses))
 
     def setup_prefix(self):
         obs = obs_as_tensor(self._last_obs, self.device)
         with th.no_grad():
             self._current_prefixes = self.policy.make_initial_prefix(obs)
-
+        infos = self.env.reset_infos
+        for idx, info in enumerate(infos):
+            self.rollout_buffer.set_prefix(prefix=self._current_prefixes[idx], _id=info["instance_id"])
     def learn(
         self,
         total_timesteps: int,
