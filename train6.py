@@ -33,9 +33,9 @@ config_dicts = [
 if __name__ == "__main__":
 
     # --- Global Configuration ---
-    NUM_ENVS = 2
+    NUM_ENVS = 80
     SEED = 123
-    TOTAL_TIMESTEPS = 4_000
+    TOTAL_TIMESTEPS = 16_000_000
 
     # --- 1. Environment Arguments ---
     env_kwargs = dict(
@@ -65,14 +65,14 @@ if __name__ == "__main__":
         wrapper_class=SokoCanonicalWithAttPadding,
         env_kwargs=env_kwargs,
         wrapper_kwargs=wrapper_kwargs,
-        vec_env_cls=DummyVecEnv  # Use DummyVecEnv for simplicity; switch to SubprocVecEnv if needed,
+        vec_env_cls=SubprocVecEnv # Use DummyVecEnv for simplicity; switch to SubprocVecEnv if needed,
     )
 
     # --- 4. Instantiate EPPO Model ---
     print("Initializing EPPO with ExperiencerActorCritic...")
 
     # Define Prefix Constraints
-    NUM_PREFIXES = 4
+    NUM_PREFIXES = 2
     ENABLE_CRITIC_PREFIX = True
     FEATURES_DIM = 256
     
@@ -84,10 +84,11 @@ if __name__ == "__main__":
         n_steps=256,
         batch_size=512,
         n_epochs=10,
+        sup_epochs=3,
         rollout_buffer_class=PrefixRolloutBuffer,
         rollout_buffer_kwargs=dict(
             prefix_shape=(NUM_PREFIXES*2, FEATURES_DIM), 
-            prefix_lr=1e-3
+            prefix_lr=5e-4
         ),
         verbose=1,
         tensorboard_log="./tensorboard/",
@@ -98,12 +99,12 @@ if __name__ == "__main__":
             backbone_extractor_kwargs=dict(
                 hidden_size=256, 
                 num_heads=4, 
-                layers=6
+                layers=1
             ),
             limb_extractor_kwargs=dict(
                 hidden_size=256, 
                 num_heads=4, 
-                layers=2
+                layers=6
             ),
             temporal_extractor_kwargs=dict(
                 hidden_size=256, 
@@ -116,6 +117,7 @@ if __name__ == "__main__":
                 thinker=[256, 256]
             )
         ),
+        device="cuda"
     )
 
     # --- 5. Train ---

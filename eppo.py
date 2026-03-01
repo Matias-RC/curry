@@ -35,6 +35,7 @@ class EPPO(OnPolicyAlgorithm):
             n_steps: int = 2048, #Size of buffer
             batch_size: int = 256, #Leverage GPU strength
             n_epochs: int = 10,
+            sup_epochs: int = 3,
             gamma: int = 0.99,
             gae_lambda: int = 0.95,
             clip_range: Union[float, Schedule] = 0.2,
@@ -340,12 +341,12 @@ class EPPO(OnPolicyAlgorithm):
         # After which do a complete pass on the reorganized buffer for training the thinker
         for epoch in range(self.n_epochs):
             for supervision_data in self.rollout_buffer.get_trajectory_batches(max(1, self.batch_size//traj_len), supervision_samples):
-                in_data = supervision_data.inputs
-                input_traj_mask = supervision_data.masks
-                targets = supervision_data.targets
+                in_data = supervision_data.inputs.to(self.device)
+                input_traj_mask = supervision_data.masks.to(self.device)
+                targets = supervision_data.targets.to(self.device)
 
-                prefixes = self.policy.make_initial_prefix(in_data[:, 0])
-                upgrade_prefixes = self.policy.upgrade_prefix_with_trajectory(prefixes, in_data, input_traj_mask)
+                prefixes = self.policy.make_initial_prefix(in_data[:, 0]).to(self.device)
+                upgrade_prefixes = self.policy.upgrade_prefix_with_trajectory(prefixes, in_data, input_traj_mask).to(self.device)
 
                 loss = th.nn.functional.mse_loss(prefixes, targets) + th.nn.functional.mse_loss(upgrade_prefixes, targets)
                 supervision_losses.append(loss.item())

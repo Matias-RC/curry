@@ -79,7 +79,7 @@ if __name__ == "__main__":
     # --- Configuration ---
     NUM_ENVS = 80
     SEED = 123
-    TOTAL_TIMESTEPS = 4_000_000
+    TOTAL_TIMESTEPS = 16_000_000
 
     # 1. Environment Arguments
     env_kwargs = dict(
@@ -130,7 +130,7 @@ if __name__ == "__main__":
                 features_dim=256,
                 hidden_size=256,
                 num_heads=4,
-                layers=4,
+                layers=6,
             ),
             net_arch=dict(pi=[256, 256], vf=[256, 256]),
         ),
