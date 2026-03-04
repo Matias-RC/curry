@@ -1,7 +1,7 @@
 import gymnasium as gym
 import torch as th
 import numpy as np
-
+from gymnasium import spaces
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.vec_env import SubprocVecEnv, DummyVecEnv
 
@@ -33,9 +33,9 @@ config_dicts = [
 if __name__ == "__main__":
 
     # --- Global Configuration ---
-    NUM_ENVS = 80
+    NUM_ENVS = 3
     SEED = 123
-    TOTAL_TIMESTEPS = 16_000_000
+    TOTAL_TIMESTEPS = 16_000
 
     # --- 1. Environment Arguments ---
     env_kwargs = dict(
@@ -75,7 +75,8 @@ if __name__ == "__main__":
     NUM_PREFIXES = 2
     ENABLE_CRITIC_PREFIX = True
     FEATURES_DIM = 256
-    
+    # TODO: make the boxoban env work, and make a vectorized env that supports custom call to do hard reset of env (separating between normal reset and
+    # hard) \
 
     model = EPPO(
         policy=ExperiencerActorCritic,
