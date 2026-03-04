@@ -10,8 +10,8 @@ from stable_baselines3.common.callbacks import BaseCallback
 from sb3_contrib import RecurrentPPO
 
 from gym_sokoban.envs import SokobanEnv
-from sokoban_wrapper import SokobanCompactWrapper, SokobanCanonicalCompactWrapper
-from convpolicy import ConvFeatureExtractor, CustomConvLSTMPolicy
+from src.envs.envs import SokobanCompactWrapper, SokobanCanonicalCompactWrapper
+from src.policies.convpolicy import ConvFeatureExtractor, CustomConvLSTMPolicy
 
 import pygame
 import pygame.surfarray as surfarray

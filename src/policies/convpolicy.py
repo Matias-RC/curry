@@ -6,7 +6,7 @@ from typing import Tuple, List, Union, Type, Dict
 from sb3_contrib.common.recurrent.policies import RecurrentActorCriticPolicy
 from sb3_contrib.common.recurrent.type_aliases import RNNStates
 from stable_baselines3.common.type_aliases import Schedule
-from convrnn import ConvLSTM, ConvLSTMWrapper
+from src.policies.convrnn import ConvLSTM, ConvLSTMWrapper
 from typing import Any, Dict, List, Optional, Tuple, Type, Union
 from gymnasium import spaces
 from stable_baselines3.common.distributions import Distribution

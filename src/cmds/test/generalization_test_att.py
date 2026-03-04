@@ -22,8 +22,8 @@ from pathlib import Path
 from stable_baselines3 import PPO
 
 # --- PROJECT IMPORTS ---
-from sokoban_wrapper import SokoPoolCurriculumEnv, SokoCanonicalWithAttPadding, SokobanEnv
-from attpolicy import SokoPlayerCentricAtt
+from src.envs.envs import SokoPoolCurriculumEnv, SokoCanonicalWithAttPadding, SokobanEnv
+from src.policies.attpolicy import SokoPlayerCentricAtt
 # --- CONFIGURATION ---
 DEVICE = "cuda" if th.cuda.is_available() else "cpu"
 CANONICAL_SHAPE = (9, 9)
@@ -83,7 +83,7 @@ if __name__ == "__main__":
         if "BitGenerator" in str(e):
             print("Detected NumPy version mismatch in saved seeds. Attempting weight injection...")
             # FALLBACK: If the above still fails, we load the weights manually
-            from attpolicy import SokoPlayerCentricAtt
+            from src.policies.attpolicy import SokoPlayerCentricAtt
             
             # Re-initialize the model architecture fresh
             model = PPO(

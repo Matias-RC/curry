@@ -9,7 +9,7 @@ from sb3_contrib import RecurrentPPO
 from sb3_contrib.common.recurrent.policies import RecurrentActorCriticPolicy
 
 from gym_sokoban.envs import SokobanEnv
-from sokoban_wrapper import SokobanCompactWrapper, SokobanRetriesWrapper
+from src.envs.envs import SokobanCompactWrapper, SokobanRetriesWrapper
 
 import numpy as np
 import pygame

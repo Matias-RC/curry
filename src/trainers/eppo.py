@@ -5,7 +5,7 @@ import torch.nn.functional as F
 import numpy as np
 from stable_baselines3 import PPO
 from stable_baselines3.common.utils import obs_as_tensor
-from alternative_maple_buffers import PrefixRolloutBuffer
+from src.buffers.CustomBuffers import PrefixRolloutBuffer
 import numpy as np
 import torch as th
 from typing import Any, ClassVar, Dict, List, Optional, Type, TypeVar, Union, Tuple
@@ -17,8 +17,8 @@ from stable_baselines3.common.utils import obs_as_tensor
 from gymnasium import spaces
 from stable_baselines3.common.utils import explained_variance, get_schedule_fn
 from stable_baselines3.common.on_policy_algorithm import OnPolicyAlgorithm
-from attpolicy import ExperiencerActorCritic
-from alternative_maple_buffers import PrefixRolloutBuffer
+from src.policies.attpolicy import ExperiencerActorCritic
+from src.buffers.CustomBuffers import PrefixRolloutBuffer
 
 class EPPO(OnPolicyAlgorithm):
     """

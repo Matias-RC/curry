@@ -12,7 +12,7 @@ from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 from stable_baselines3.common.utils import obs_as_tensor
 
-from sokoban_wrapper import SokobanCompactWrapper, SokobanRetriesWrapper
+from src.envs.envs import SokobanCompactWrapper, SokobanRetriesWrapper
 
 # ==============================================================================
 # 1. Hyperparameters & Config

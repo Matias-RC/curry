@@ -5,7 +5,7 @@ import gymnasium as gym
 from gym_sokoban.envs import SokobanEnv
 from stable_baselines3.common.monitor import Monitor
 
-from sokoban_wrapper import (
+from src.envs.envs import (
     SokobanCompactWrapper,
     SokobanRetriesWrapper,
 )
@@ -20,10 +20,10 @@ from stable_baselines3.common.callbacks import BaseCallback
 import pygame.surfarray as surfarray
 from stable_baselines3.common.utils import FloatSchedule, explained_variance, obs_as_tensor
 from consolidator_class import ChannelStackedSpatialAccumulation, Consolidator
-from alternative_maple_policy import MaplePolicy, PrefixCombinator, ConvFeatureExtractor
-from alternative_maple import Maple
-from alternative_maple_buffers import MapleRolloutBuffer, DynamicReplayBuffer
-from alternative_maple_callback import MapleCallback
+from src.policies.maple_policy import MaplePolicy, PrefixCombinator, ConvFeatureExtractor
+from src.trainers.maple import Maple
+from src.buffers.CustomBuffers import MapleRolloutBuffer, DynamicReplayBuffer
+from src.callbacks.maple_callback import MapleCallback
 
 import time
 

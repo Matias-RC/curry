@@ -8,17 +8,17 @@ from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.callbacks import BaseCallback
 
 from gym_sokoban.envs import SokobanEnv
-from sokoban_wrapper import SokobanCompactWrapper, SokobanRetriesWrapper, SokobanCanonicalCompactWrapper
+from src.envs.envs import SokobanCompactWrapper, SokobanRetriesWrapper, SokobanCanonicalCompactWrapper
 
 import numpy as np
 import pygame
 import pygame.surfarray as surfarray
 
 from consolidator_class import ChannelStackedSpatialAccumulation, Consolidator
-from alternative_maple_policy import MaplePolicy, PrefixCombinator, ConvFeatureExtractor
-from alternative_maple import Maple
-from alternative_maple_buffers import MapleRolloutBuffer, DynamicReplayBuffer
-from alternative_maple_callback import MapleCallback
+from src.policies.maple_policy import MaplePolicy, PrefixCombinator, ConvFeatureExtractor
+from src.trainers.maple import Maple
+from src.buffers.CustomBuffers import MapleRolloutBuffer, DynamicReplayBuffer
+from src.callbacks.maple_callback import MapleCallback
 import os
 from pathlib import Path
 from stable_baselines3.common.callbacks import BaseCallback

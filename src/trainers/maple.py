@@ -23,7 +23,7 @@ import torch.nn.functional as F
 import torch as th
 import numpy as np
 
-from alternative_maple_buffers import DynamicReplayBuffer, MapleRolloutBuffer
+from src.buffers.CustomBuffers import DynamicReplayBuffer, MapleRolloutBuffer
 from consolidator_class import Consolidator
 
 

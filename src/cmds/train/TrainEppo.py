@@ -7,10 +7,10 @@ from stable_baselines3.common.vec_env import SubprocVecEnv, DummyVecEnv
 
 # --- IMPORTS FROM YOUR PROJECT ---
 # Ensure these match your actual file names
-from sokoban_wrapper import SokoPoolCurriculumEnv, SokoCanonicalWithAttPadding
-from eppo import EPPO
-from attpolicy import ExperiencerActorCritic
-from alternative_maple_buffers import PrefixRolloutBuffer
+from src.envs.envs import SokoPoolCurriculumEnv, SokoCanonicalWithAttPadding
+from src.trainers.eppo import EPPO
+from src.policies.attpolicy import ExperiencerActorCritic
+from src.buffers.CustomBuffers import PrefixRolloutBuffer
 
 
 # ==============================================================================

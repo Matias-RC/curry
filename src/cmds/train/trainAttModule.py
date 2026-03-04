@@ -9,13 +9,13 @@ from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback,
 
 # --- IMPORTS FROM YOUR PROJECT ---
 # Ensure these files are in your directory or python path
-from sokoban_wrapper import (
+from src.envs.envs import (
     SokoRetriesCurriculum,
     SokoCanonicalWithAttPadding,
     SokobanRetriesWrapper,
     SokoPoolCurriculumEnv
 )
-from attpolicy import SokoPlayerCentricAtt
+from src.policies.attpolicy import SokoPlayerCentricAtt
 
 
 class VectorCurriculumCallback(BaseCallback):

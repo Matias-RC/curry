@@ -5,7 +5,7 @@ import gymnasium as gym
 from gym_sokoban.envs import SokobanEnv
 from stable_baselines3.common.monitor import Monitor
 
-from sokoban_wrapper import (
+from src.envs.envs import (
     SokobanCompactWrapper,
     SokobanRetriesWrapper,
     SokobanCanonicalCompactWrapper,
@@ -21,11 +21,68 @@ from stable_baselines3.common.callbacks import BaseCallback
 import pygame.surfarray as surfarray
 from stable_baselines3.common.utils import explained_variance, obs_as_tensor
 from consolidator_class import ChannelStackedSpatialAccumulation, Consolidator
-from alternative_maple_policy import MaplePolicy, PrefixCombinator, ConvFeatureExtractor
+from src.policies.maple_policy import MaplePolicy, PrefixCombinator, ConvFeatureExtractor
 from stable_baselines3 import PPO
-from alternative_maple_buffers import MapleRolloutBuffer, DynamicReplayBuffer
-from alternative_maple_callback import MapleCallback
-from train4 import BaselineComparableCNN
+from src.buffers.CustomBuffers import MapleRolloutBuffer, DynamicReplayBuffer
+from src.callbacks.maple_callback import MapleCallback
+from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
+#This used to be an import
+class BaselineComparableCNN(BaseFeaturesExtractor):
+    """
+    Identical architecture to previous steps.
+    Automatically adapts to 4-channel input from CanonicalWrapper.
+    """
+    def __init__(self, observation_space: spaces.Box, config: dict, combinator_kwargs: dict):
+        pool_shape = combinator_kwargs["out_shape"] 
+        out_channels = combinator_kwargs["out_channels"]
+        features_dim = out_channels * pool_shape[0] * pool_shape[1]
+        
+        super().__init__(observation_space, features_dim=features_dim)
+
+        self.conv_configs = config.get("conv_configs")
+        
+        # KEY CHANGE: This now automatically picks up '4' from your wrapper
+        in_channels = observation_space.shape[0] 
+        conv_layers = []
+        
+        for conv_conf in self.conv_configs:
+            c_out = conv_conf['out_channels']
+            k = conv_conf.get('kernel_size', 3)
+            s = conv_conf.get('stride', 1)
+            p = conv_conf.get('padding', 1)
+            
+            conv_layers.append(nn.Conv2d(in_channels, c_out, k, s, p))
+            conv_layers.append(nn.ReLU())
+            in_channels = c_out
+            
+        self.backbone = nn.Sequential(*conv_layers)
+
+        c_in = in_channels 
+        c_hidden = combinator_kwargs["hidden_channels"]
+        c_out_head = combinator_kwargs["out_channels"]
+        n_layers = combinator_kwargs["n_layers"]
+        
+        head_layers = []
+        past_out = c_in
+        
+        for _ in range(n_layers):
+            head_layers.append(nn.Conv2d(past_out, c_hidden, 3, 1, 1))
+            head_layers.append(nn.ReLU())
+            past_out = c_hidden
+            
+        head_layers.append(nn.Conv2d(past_out, c_out_head, 3, 1, 1))
+        head_layers.append(nn.ReLU())
+        
+        self.head = nn.Sequential(*head_layers)
+        self.pool = nn.AdaptiveAvgPool2d(pool_shape)
+        self.flatten = nn.Flatten()
+
+    def forward(self, observations: th.Tensor) -> th.Tensor:
+        x = self.backbone(observations)
+        x = self.head(x)
+        x = self.pool(x)
+        x = self.flatten(x)
+        return x
 import time
 
 import pygame
