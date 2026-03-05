@@ -191,3 +191,5 @@ models
 models_vec
 
 logs
+
+.sokoban_cache
