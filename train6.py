@@ -40,8 +40,8 @@ if __name__ == "__main__":
     # --- 1. Environment Arguments ---
     env_kwargs = dict(
         configurations=config_dicts,
-        pool_size=8,
-        min_plays_to_eval=3,
+        pool_size=4,
+        min_plays_to_eval=5,
         max_plays_to_eval=25,
         gamma=0.2,
         dim_room=(6, 6),     # Initial fallback dimension
