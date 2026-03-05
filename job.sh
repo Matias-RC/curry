@@ -1,10 +1,11 @@
 #!/bin/bash
 #SBATCH --job-name=soko_erl
-#SBATCH --nodelist=peteroa
-#SBATCH --gres=gpu:h100:1          
+#SBATCH --partition=ialab
+#SBATCH --nodelist=llaima
+#SBATCH --gres=gpu:a40:1          
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=70        
+#SBATCH --cpus-per-task=12      
 #SBATCH --mem=48G                  
 #SBATCH --time=24:00:00
 #SBATCH --output=logs/train_%j.out
