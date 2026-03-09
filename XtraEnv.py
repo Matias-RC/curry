@@ -114,3 +114,10 @@ class BoxobanCustomReset(BoxobanEnv):
             starting_observation = room_to_rgb(self.room_state, self.room_fixed)
 
             return starting_observation, {}
+    
+
+class VE_ModifiableOptions(SubprocVecEnv):
+    def __init__(self, env_fns, start_method = None):
+        super().__init__(env_fns, start_method)
+    
+    
