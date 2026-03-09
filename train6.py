@@ -33,15 +33,15 @@ config_dicts = [
 if __name__ == "__main__":
 
     # --- Global Configuration ---
-    NUM_ENVS = 3
+    NUM_ENVS = 32
     SEED = 123
-    TOTAL_TIMESTEPS = 16_000
+    TOTAL_TIMESTEPS = 16_000_000
 
     # --- 1. Environment Arguments ---
     env_kwargs = dict(
         configurations=config_dicts,
         pool_size=4,
-        min_plays_to_eval=5,
+        min_plays_to_eval=6,
         max_plays_to_eval=25,
         gamma=0.2,
         dim_room=(6, 6),     # Initial fallback dimension
@@ -82,14 +82,14 @@ if __name__ == "__main__":
         policy=ExperiencerActorCritic,
         env=vec_env,
         learning_rate=3e-4,
-        n_steps=256,
+        n_steps=128,
         batch_size=512,
         n_epochs=10,
         sup_epochs=3,
         rollout_buffer_class=PrefixRolloutBuffer,
         rollout_buffer_kwargs=dict(
             prefix_shape=(NUM_PREFIXES*2, FEATURES_DIM), 
-            prefix_lr=5e-4
+            prefix_lr=5e-3
         ),
         verbose=1,
         tensorboard_log="./tensorboard/",
@@ -100,7 +100,7 @@ if __name__ == "__main__":
             backbone_extractor_kwargs=dict(
                 hidden_size=256, 
                 num_heads=4, 
-                layers=1
+                layers=2
             ),
             limb_extractor_kwargs=dict(
                 hidden_size=256, 
@@ -110,7 +110,7 @@ if __name__ == "__main__":
             temporal_extractor_kwargs=dict(
                 hidden_size=256, 
                 num_heads=4, 
-                layers=2
+                layers=4
             ),
             net_arch=dict(
                 pi=[256, 256], 
