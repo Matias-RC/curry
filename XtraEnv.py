@@ -119,5 +119,11 @@ class BoxobanCustomReset(BoxobanEnv):
 class VE_ModifiableOptions(SubprocVecEnv):
     def __init__(self, env_fns, start_method = None):
         super().__init__(env_fns, start_method)
-    
-    
+
+    def modify_options(self, env_idx:int, new_options:Dict = None):
+        if env_idx < 0 or env_idx >= self.num_envs:
+            raise IndexError(f"Environment index {env_idx} is out of bounds for {self.num_envs} environments.")
+        if new_options is None:
+            raise ValueError("New options must be provided as a dictionary.") # In the future allow it to be solid
+        self._options[env_idx] = new_options
+
